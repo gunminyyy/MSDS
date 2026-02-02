@@ -23,7 +23,7 @@ if 'converted_files' not in st.session_state:
     st.session_state['converted_files'] = []
 
 with col1:
-    st.subheader("원본 파일 업로드 (복수 가능)")
+    st.subheader("원본 파일 업로드")
     # accept_multiple_files=True 옵션 추가
     uploaded_files = st.file_uploader(
         "여러 PDF 파일을 드래그해서 넣어주세요", 
@@ -38,7 +38,7 @@ with col2:
     st.write("")
     st.write("")
     # 변환 버튼
-    if st.button("▶ 일괄 변환 시작", use_container_width=True):
+    if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files:
             with st.spinner(f"{len(uploaded_files)}개의 파일 변환 중..."):
                 # --- [로직 추가 구간] ---
@@ -70,3 +70,4 @@ with col3:
                 )
     else:
         st.info("파일을 업로드하고 변환 시작을 눌러주세요.")
+
