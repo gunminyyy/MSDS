@@ -4,7 +4,7 @@ import streamlit as st
 st.set_page_config(page_title="PDF to Excel Converter", layout="wide")
 
 # 2. 프로그램 제목
-st.title("📄 PDF 데이터 엑셀 변환기")
+st.title("MSDS 양식 변환기")
 st.markdown("---")
 
 # 3. 선택 박스 (양식 선택 등)
@@ -19,7 +19,7 @@ st.write("") # 간격 조절
 col1, col2, col3 = st.columns([4, 2, 4])
 
 with col1:
-    st.subheader("1. 원본 파일 업로드")
+    st.subheader("원본 파일 업로드")
     uploaded_file = st.file_uploader(
         "PDF 파일을 드래그해서 넣어주세요", 
         type="pdf",
@@ -45,7 +45,7 @@ with col2:
             st.error("파일을 먼저 업로드해주세요.")
 
 with col3:
-    st.subheader("2. 변환된 파일 다운로드")
+    st.subheader("변환된 파일 다운로드")
     # 변환이 완료된 후 파일이 나타나는 목록 (예시용 데이터)
     if uploaded_file is not None:
         st.info("변환된 파일이 여기에 표시됩니다.")
@@ -63,3 +63,4 @@ with col3:
 # 5. 하단 안내문 (선택 사항)
 st.markdown("---")
 st.caption("© 2024 PDF to Excel Auto System - 깃허브 및 스트림릿 배포용")
+
