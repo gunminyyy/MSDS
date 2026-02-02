@@ -10,7 +10,7 @@ st.markdown("---")
 # 3. 양식 선택 박스
 option = st.selectbox(
     "적용할 양식을 선택하세요",
-    ("양식 A (기본)", "양식 B (정밀 분석)", "기타 양식")
+    ("양식 A", "양식 B", "기타 양식")
 )
 
 st.write("") 
@@ -70,7 +70,3 @@ with col3:
                 )
     else:
         st.info("파일을 업로드하고 변환 시작을 눌러주세요.")
-
-# 5. 하단 안내문
-st.markdown("---")
-st.caption("© 2024 MSDS Auto System - 깃허브 및 스트림릿 배포용")
