@@ -3,36 +3,6 @@ import streamlit as st
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS PDF to Excel Converter", layout="wide")
 
-# 디자인 개선을 위한 CSS 적용 (요청하신 테두리와 깔끔한 스타일 적용)
-st.markdown("""
-    <style>
-    .stApp {
-        background-color: #f8fafc;
-    }
-    [data-testid="stHeader"] {
-        background-color: #f8fafc;
-    }
-    /* 카드 스타일 테두리 적용 */
-    div[data-testid="stColumn"] > div {
-        border: 1px solid #e2e8f0;
-        padding: 1.5rem;
-        border-radius: 12px;
-        background-color: #ffffff;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-    /* 제목 스타일 */
-    h1 {
-        color: #1e293b;
-        font-weight: 700;
-    }
-    /* 버튼 스타일 */
-    .stButton>button {
-        border-radius: 8px;
-        font-weight: 600;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
 # 2. 프로그램 제목
 st.title("MSDS 양식 변환기")
 st.markdown("---")
@@ -101,6 +71,3 @@ with col3:
     else:
         st.info("파일을 업로드하고 변환 시작을 눌러주세요.")
 
-# 5. 하단 안내문 (선택 사항)
-st.markdown("---")
-st.caption("© 2024 PDF to Excel Auto System - 깃허브 및 스트림릿 배포용")
