@@ -13,81 +13,94 @@ import os
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-
-st.title("MSDS 양식 변환기 (그림 자동 인식 정렬)")
+st.title("MSDS 양식 변환기 (정밀 인식 모드)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [함수] 리소스 경로 찾기 (폴더 내 이미지 자동 로드용)
+# [함수] 이미지 정규화 (투명 배경 제거 -> 흰색 배경으로 통일)
 # --------------------------------------------------------------------------
+def normalize_image(pil_img):
+    """이미지를 32x32 크기의 흑백(Grayscale)으로 변환하되, 투명한 부분은 흰색으로 채움"""
+    try:
+        # RGBA(투명도 포함)라면 흰색 배경을 깔아줌
+        if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
+            # 흰색 배경 캔버스 생성
+            background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
+            # 투명도가 있는 이미지를 위에 덮어씌움 (마스크 사용)
+            if pil_img.mode == 'P':
+                pil_img = pil_img.convert('RGBA')
+            background.paste(pil_img, mask=pil_img.split()[3]) # 3번 채널이 Alpha
+            pil_img = background
+        else:
+            pil_img = pil_img.convert('RGB')
+            
+        # 32x32로 리사이징하고 흑백 변환
+        return pil_img.resize((32, 32)).convert('L')
+    except:
+        return pil_img.resize((32, 32)).convert('L')
+
+# [함수] 리소스 경로 찾기
 def get_reference_images():
-    """
-    reference_imgs 폴더에 있는 모든 이미지를 읽어서 {파일명: 이미지객체}로 반환
-    """
-    img_folder = "reference_imgs" # 폴더 이름
+    img_folder = "reference_imgs"
     ref_images = {}
-    
-    if not os.path.exists(img_folder):
-        return {}, False
-        
+    if not os.path.exists(img_folder): return {}, False
     try:
         file_list = sorted(os.listdir(img_folder)) 
         for fname in file_list:
-            # [수정] .tif, .tiff 확장자 지원 추가
             if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.tif', '.tiff')):
                 full_path = os.path.join(img_folder, fname)
                 try:
                     pil_img = PILImage.open(full_path)
                     ref_images[fname] = pil_img
-                except:
-                    continue
+                except: continue
         return ref_images, True
-    except:
-        return {}, False
+    except: return {}, False
 
-# [함수] 이미지 비교 매칭
+# [함수] 이미지 비교 매칭 (개선됨)
 def find_best_match_name(src_img, ref_images):
     best_score = float('inf')
     best_name = None
+    
     try:
-        # 비교 정확도를 위해 RGB로 변환 후 흑백 처리 (TIFF 호환성)
-        if src_img.mode != 'RGB':
-            src_img = src_img.convert('RGB')
-            
-        src_small = src_img.resize((32, 32)).convert('L')
-        src_arr = np.array(src_small, dtype=np.int16)
+        # 원본 이미지 정규화 (흰배경+흑백)
+        src_norm = normalize_image(src_img)
+        src_arr = np.array(src_norm, dtype=np.int16)
         
         for name, ref_img in ref_images.items():
-            if ref_img.mode != 'RGB':
-                ref_img = ref_img.convert('RGB')
-                
-            ref_small = ref_img.resize((32, 32)).convert('L')
-            ref_arr = np.array(ref_small, dtype=np.int16)
+            # 기준 이미지 정규화
+            ref_norm = normalize_image(ref_img)
+            ref_arr = np.array(ref_norm, dtype=np.int16)
+            
+            # 차이 계산
             diff = np.mean(np.abs(src_arr - ref_arr))
             
             if diff < best_score:
                 best_score = diff
                 best_name = name
         
-        # 임계값 (유사도) 설정
-        if best_score < 60: return best_name
-        else: return None
+        # 임계값: 0(완벽일치) ~ 255(완전반대). 50 이하면 꽤 비슷한 그림
+        if best_score < 65: 
+            return best_name
+        else: 
+            return None
     except: return None
+
+# [함수] 파일명에서 숫자 추출 (정렬용)
+def extract_number(filename):
+    # "1.tif" -> 1, "10.png" -> 10 변환 (숫자가 없으면 999)
+    nums = re.findall(r'\d+', filename)
+    return int(nums[0]) if nums else 999
 
 # 2. 파일 업로드
 with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
         master_data_file = st.file_uploader("1. 중앙 데이터 (master_data.xlsx)", type="xlsx")
-        
-        # [상태 표시] 내장 이미지 로드 확인
         loaded_refs, folder_exists = get_reference_images()
         if folder_exists and loaded_refs:
-            st.success(f"✅ 내장된 기준 그림 {len(loaded_refs)}개를 로드했습니다.")
+            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨 (폴더: reference_imgs)")
         elif not folder_exists:
-            st.warning("⚠️ 'reference_imgs' 폴더가 없습니다. 그림 정렬이 작동하지 않습니다.")
-        else:
-            st.warning("⚠️ 폴더는 있지만 그림 파일이 없습니다.")
+            st.warning("⚠️ 'reference_imgs' 폴더를 만들고 그림 파일들을 넣어주세요.")
 
     with col2:
         template_file = st.file_uploader("2. 양식 파일 (통합 양식 GHS MSDS(K).xlsx)", type="xlsx")
@@ -112,7 +125,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("그림 인식 및 정렬 중..."):
+            with st.spinner("그림 분석 및 정밀 정렬 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -168,7 +181,7 @@ with col_center:
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
                             # ---------------------------------------------------
-                            # [핵심 수정] 그림 인식 및 정렬 (내장 이미지 사용)
+                            # [핵심 수정] 그림 정밀 인식 및 정렬
                             # ---------------------------------------------------
                             
                             # 1. 기존 그림 삭제
@@ -188,6 +201,7 @@ with col_center:
                                 if "그림문자" in str(row[0]): img_row = i; break
                             
                             collected_pil_images = []
+                            matched_names = [] # 디버깅용: 어떤 파일로 인식됐는지 기록
                             
                             if img_row > 0 and hasattr(src_ws, '_images'):
                                 for img in src_ws._images:
@@ -197,19 +211,30 @@ with col_center:
                                             if hasattr(img, '_data'):
                                                 pil_img = PILImage.open(io.BytesIO(img._data()))
                                                 
-                                                # [인식] 내장된 ref_images와 비교
+                                                # [인식]
                                                 matched_name = None
                                                 if loaded_refs:
                                                     matched_name = find_best_match_name(pil_img, loaded_refs)
                                                 
-                                                sort_key = matched_name if matched_name else "Z_Unknown"
-                                                collected_pil_images.append((sort_key, pil_img))
+                                                if matched_name:
+                                                    matched_names.append(matched_name)
+                                                    # 정렬 키: 파일명에서 숫자 추출 (예: '2.tif' -> 2)
+                                                    sort_key = extract_number(matched_name)
+                                                    collected_pil_images.append((sort_key, pil_img))
+                                                else:
+                                                    # 인식 실패 시 9999번으로 맨 뒤로 보냄
+                                                    matched_names.append("인식실패")
+                                                    collected_pil_images.append((9999, pil_img))
                             
-                            # 3. 정렬 (파일명 기준 1.tif -> 2.tif ...)
+                            # 3. 정렬 (숫자 오름차순: 1 -> 2 -> 3...)
                             collected_pil_images.sort(key=lambda x: x[0])
                             sorted_imgs = [item[1] for item in collected_pil_images]
                             
-                            # 4. 그림 합치기 (Stitching) - 정밀 배치 유지
+                            # 화면에 인식 결과 표시 (디버깅)
+                            if matched_names:
+                                st.info(f"🔍 인식된 그림 목록: {', '.join(matched_names)}")
+                            
+                            # 4. 그림 합치기 (Stitching)
                             if sorted_imgs:
                                 unit_size = 67 
                                 icon_size = 60 
@@ -261,7 +286,7 @@ with col_center:
                 if new_files:
                     st.success("완료! 그림들이 번호 순서대로 정렬되었습니다.")
         else:
-            st.error("모든 파일(원본, 중앙DB, 양식)을 업로드해주세요.")
+            st.error("모든 파일을 업로드해주세요.")
 
 with col_right:
     st.subheader("결과 다운로드")
