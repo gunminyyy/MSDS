@@ -15,7 +15,7 @@ st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
 st.title("MSDS 양식 변환기")
 st.markdown("---")
 
-# 3. 파일 설정 (모두 직접 업로드 방식으로 변경)
+# 3. 파일 설정
 with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -25,22 +25,18 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
             help="수식 데이터가 들어있는 엑셀 파일"
         )
     with col2:
-        # 양식 파일도 직접 업로드
         template_file = st.file_uploader(
             "2. 양식 파일 (통합 양식 GHS MSDS(K).xlsx)", 
             type="xlsx",
             help="수식이 걸려있는 빈 양식 파일"
         )
 
-# 제품명 입력
 product_name_input = st.text_input("제품명을 입력하세요", help="이 값이 B7, B10에 입력됩니다.")
-
-# 4. 양식 선택
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 
 st.write("") 
 
-# 5. 메인 로직
+# 4. 메인 로직
 col_left, col_center, col_right = st.columns([4, 2, 4])
 
 if 'converted_files' not in st.session_state:
@@ -59,7 +55,6 @@ with col_center:
     st.write("") ; st.write("") ; st.write("")
     
     if st.button("▶ 변환 시작", use_container_width=True):
-        # 3가지 파일과 제품명이 모두 있어야 실행
         if uploaded_files and product_name_input and master_data_file and template_file:
             with st.spinner("데이터 동기화 및 변환 중..."):
                 
@@ -76,17 +71,18 @@ with col_center:
                             src_wb = load_workbook(uploaded_file, data_only=True)
                             src_ws = src_wb.active
                             
-                            # 3. 양식(Target) 로드 (업로드된 파일 사용)
-                            # 매번 새로운 복사본을 만들기 위해 BytesIO 사용
+                            # 3. 양식(Target) 로드
+                            # BytesIO를 사용하여 매번 깨끗한 파일 객체 생성
                             dest_wb = load_workbook(io.BytesIO(template_file.getvalue()))
                             dest_ws = dest_wb.active
                             
                             # ---------------------------------------------------
-                            # [1] 중앙 데이터 동기화 ('위험 안전문구' 시트)
+                            # [1] 중앙 데이터 동기화
                             # ---------------------------------------------------
                             target_sheet_name = '위험 안전문구'
                             if target_sheet_name in dest_wb.sheetnames:
                                 data_ws = dest_wb[target_sheet_name]
+                                # 기존 데이터 삭제 (헤더는 남기고 내용만 교체하거나 전체 교체)
                                 data_ws.delete_rows(1, data_ws.max_row)
                             else:
                                 data_ws = dest_wb.create_sheet(target_sheet_name)
@@ -95,15 +91,22 @@ with col_center:
                                 data_ws.append(r)
 
                             # ---------------------------------------------------
-                            # [2] 수식 경로 청소
+                            # [2] 수식 경로 청소 (안전한 치환)
                             # ---------------------------------------------------
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if cell.data_type == 'f':
                                         formula_str = str(cell.value)
+                                        # 외부 경로 패턴이 감지되면 치환
                                         if "ingredients CAS and EC 통합.xlsx]" in formula_str:
+                                            # 정규식: 'D:\...\ 파일명]' 부분을 찾아서 작은따옴표(') 하나로 바꿈
+                                            # 예: 'D:\...\[파일]시트'! -> '시트'! 
+                                            # 엑셀 수식에서 시트명 앞에는 작은따옴표가 붙으므로 문맥을 유지해야 함
                                             new_formula = re.sub(r"'?[a-zA-Z]:\\[^']*\['?[^']*'?.xlsx\]", "'", formula_str)
+                                            
+                                            # 혹시 경로 없이 [파일]만 있는 경우도 제거
                                             new_formula = re.sub(r"\[[^\]]*\.xlsx\]", "", new_formula)
+                                            
                                             cell.value = new_formula
 
                             # ---------------------------------------------------
@@ -137,16 +140,26 @@ with col_center:
                                 if "그림문자" in str(row[0]): img_row = i; break
                             
                             if img_row > 0:
-                                imgs = [img for img in src_ws._images if img.anchor._from.row >= img_row - 1 and img.anchor._from.row <= img_row + 1]
+                                # 그림문자 행(img_row) 기준으로 위아래 1행 범위 내 이미지 검색
+                                # 주의: openpyxl 버전이나 엑셀 구조에 따라 anchor row가 0-based인지 1-based인지 다를 수 있음
+                                # 보통 anchor는 0부터 시작하므로 엑셀행(1부터 시작)과 비교 시 -1 보정이 필요할 수 있음
+                                imgs = [img for img in src_ws._images if img.anchor._from.row >= img_row - 2 and img.anchor._from.row <= img_row + 1]
+                                
                                 for idx, src_img in enumerate(imgs):
-                                    img_bytes = io.BytesIO(src_img._data())
-                                    new_img = XLImage(img_bytes)
-                                    new_img.width = 67; new_img.height = 67
-                                    dest_ws.add_image(new_img, f"{get_column_letter(2 + idx)}23")
+                                    # 이미지 데이터 손상 방지를 위해 BytesIO로 래핑
+                                    if hasattr(src_img, '_data'): # 이미지 데이터가 있는 경우만
+                                        img_bytes = io.BytesIO(src_img._data())
+                                        new_img = XLImage(img_bytes)
+                                        new_img.width = 67; new_img.height = 67
+                                        
+                                        dest_ws.add_image(new_img, f"{get_column_letter(2 + idx)}23")
 
-                            # 저장
+                            # ---------------------------------------------------
+                            # [중요] 저장 및 포인터 초기화
+                            # ---------------------------------------------------
                             output = io.BytesIO()
                             dest_wb.save(output)
+                            output.seek(0) # 파일 포인터를 처음으로 돌려야 정상적인 파일로 인식됨
                             
                             final_name = f"{product_name_input} GHS MSDS(K).xlsx"
                             if final_name in new_download_data:
@@ -162,7 +175,7 @@ with col_center:
                 st.session_state['download_data'] = new_download_data
                 
                 if new_files:
-                    st.success("변환 완료!")
+                    st.success("변환 완료! 다운로드 버튼을 눌러주세요.")
         else:
             st.error("중앙 데이터, 양식 파일, 원본 파일, 제품명을 모두 넣어주세요.")
 
@@ -173,4 +186,11 @@ with col_right:
             c1, c2 = st.columns([3, 1])
             with c1: st.text(f"📄 {fname}")
             with c2:
-                st.download_button("받기", st.session_state['download_data'][fname], file_name=fname, key=i)
+                # [수정] MIME Type을 명시하여 엑셀 파일임을 브라우저에 알림
+                st.download_button(
+                    label="받기", 
+                    data=st.session_state['download_data'][fname], 
+                    file_name=fname, 
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=i
+                )
