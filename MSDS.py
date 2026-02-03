@@ -7,9 +7,13 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from PIL import Image as PILImage
 import io
 import re
+import gc # 메모리 청소용
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
+
+# (비밀번호 기능 제거됨)
+
 st.title("MSDS 양식 변환기 (그림 병합 배치)")
 st.markdown("---")
 
@@ -100,7 +104,7 @@ with col_center:
                             # [핵심 수정] 그림 병합 배치 (Image Merging)
                             # ---------------------------------------------------
                             
-                            # 1. 기존 그림 삭제 (B23 근처)
+                            # 1. 기존 그림 삭제
                             target_anchor_row = 22
                             if hasattr(dest_ws, '_images'):
                                 preserved_imgs = []
@@ -122,39 +126,28 @@ with col_center:
                                     if hasattr(img, 'anchor'):
                                         r = img.anchor._from.row
                                         if img_row - 2 <= r <= img_row + 1:
-                                            # PIL 이미지로 변환하여 리스트에 저장
                                             if hasattr(img, '_data'):
                                                 pil_img = PILImage.open(io.BytesIO(img._data()))
                                                 collected_pil_images.append(pil_img)
                             
                             # 3. 그림 합치기 (Stitching) - 1.77cm 고정 및 내부 정렬
                             if collected_pil_images:
-                                # [설정] 전체 틀 높이 고정 (1.77cm ≈ 67px)
                                 unit_size = 67 
-                                
-                                # [설정] 내부 그림 크기 및 위치 조정
-                                icon_size = 60 # 그림을 틀보다 약간 작게 (여백 확보용)
-                                padding_top = 4 # 위쪽 여백 4px (그림을 아래로 내림)
-                                padding_left = (unit_size - icon_size) // 2 # 좌우 중앙 정렬
+                                icon_size = 60 
+                                padding_top = 4 
+                                padding_left = (unit_size - icon_size) // 2 
                                 
                                 total_width = unit_size * len(collected_pil_images)
-                                total_height = unit_size # 높이는 67px로 고정 (절대 늘리지 않음)
+                                total_height = unit_size 
                                 
-                                # 투명 배경의 빈 캔버스 생성
                                 merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
                                 
                                 for idx, p_img in enumerate(collected_pil_images):
-                                    # 그림 리사이징 (icon_size로 축소)
                                     p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                    
-                                    # 좌표 계산 (틀 안에서 위치 잡기)
                                     x_pos = (idx * unit_size) + padding_left
                                     y_pos = padding_top
-                                    
-                                    # 캔버스에 붙여넣기
                                     merged_img.paste(p_img_resized, (x_pos, y_pos))
                                 
-                                # 4. 합친 이미지를 엑셀에 삽입
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG') 
                                 img_byte_arr.seek(0)
@@ -180,6 +173,13 @@ with col_center:
                 st.session_state['converted_files'] = new_files
                 st.session_state['download_data'] = new_download_data
                 
+                # [보안] 메모리 청소 (비밀번호는 없어도 데이터 흔적은 지움)
+                del df_master
+                if 'src_wb' in locals(): del src_wb
+                if 'dest_wb' in locals(): del dest_wb
+                if 'output' in locals(): del output
+                gc.collect()
+
                 if new_files:
                     st.success("완료! 그림들이 깔끔하게 이어졌습니다.")
         else:
