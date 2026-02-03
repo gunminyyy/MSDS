@@ -127,35 +127,40 @@ with col_center:
                                                 pil_img = PILImage.open(io.BytesIO(img._data()))
                                                 collected_pil_images.append(pil_img)
                             
-                            # 3. 그림 합치기 (Stitching) - 위치 조정 적용
+                            # 3. 그림 합치기 (Stitching) - 1.77cm 고정 및 내부 정렬
                             if collected_pil_images:
-                                # 개별 그림 크기 설정 (1.77cm ≈ 67px)
+                                # [설정] 전체 틀 높이 고정 (1.77cm ≈ 67px)
                                 unit_size = 67 
                                 
-                                # [수정] 수직 중앙 정렬을 위한 여백 설정
-                                # 위쪽에 12픽셀 정도 투명 공간을 주어 이미지를 아래로 내림
-                                vertical_padding = 12 
+                                # [설정] 내부 그림 크기 및 위치 조정
+                                icon_size = 60 # 그림을 틀보다 약간 작게 (여백 확보용)
+                                padding_top = 4 # 위쪽 여백 4px (그림을 아래로 내림)
+                                padding_left = (unit_size - icon_size) // 2 # 좌우 중앙 정렬
                                 
                                 total_width = unit_size * len(collected_pil_images)
-                                # 캔버스 높이를 여백만큼 키움
-                                total_height = unit_size + vertical_padding 
+                                total_height = unit_size # 높이는 67px로 고정 (절대 늘리지 않음)
                                 
                                 # 투명 배경의 빈 캔버스 생성
                                 merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
                                 
                                 for idx, p_img in enumerate(collected_pil_images):
-                                    # 크기 리사이징
-                                    p_img_resized = p_img.resize((unit_size, unit_size), PILImage.LANCZOS)
-                                    # [수정] y좌표를 vertical_padding만큼 내려서 붙여넣기
-                                    merged_img.paste(p_img_resized, (idx * unit_size, vertical_padding))
+                                    # 그림 리사이징 (icon_size로 축소)
+                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                    
+                                    # 좌표 계산 (틀 안에서 위치 잡기)
+                                    x_pos = (idx * unit_size) + padding_left
+                                    y_pos = padding_top
+                                    
+                                    # 캔버스에 붙여넣기
+                                    merged_img.paste(p_img_resized, (x_pos, y_pos))
                                 
                                 # 4. 합친 이미지를 엑셀에 삽입
                                 img_byte_arr = io.BytesIO()
-                                merged_img.save(img_byte_arr, format='PNG') # PNG로 저장해야 투명도 유지됨
+                                merged_img.save(img_byte_arr, format='PNG') 
                                 img_byte_arr.seek(0)
                                 
                                 final_xl_img = XLImage(img_byte_arr)
-                                dest_ws.add_image(final_xl_img, 'B23') # B23 셀 하나에만 넣음
+                                dest_ws.add_image(final_xl_img, 'B23')
 
                             # 저장
                             output = io.BytesIO()
