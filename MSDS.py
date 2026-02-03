@@ -4,7 +4,7 @@ from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
-from PIL import Image as PILImage # 이미지 처리 라이브러리
+from PIL import Image as PILImage
 import io
 import re
 
@@ -127,21 +127,27 @@ with col_center:
                                                 pil_img = PILImage.open(io.BytesIO(img._data()))
                                                 collected_pil_images.append(pil_img)
                             
-                            # 3. 그림 합치기 (Stitching)
+                            # 3. 그림 합치기 (Stitching) - 위치 조정 적용
                             if collected_pil_images:
                                 # 개별 그림 크기 설정 (1.77cm ≈ 67px)
                                 unit_size = 67 
+                                
+                                # [수정] 수직 중앙 정렬을 위한 여백 설정
+                                # 위쪽에 12픽셀 정도 투명 공간을 주어 이미지를 아래로 내림
+                                vertical_padding = 12 
+                                
                                 total_width = unit_size * len(collected_pil_images)
-                                total_height = unit_size
+                                # 캔버스 높이를 여백만큼 키움
+                                total_height = unit_size + vertical_padding 
                                 
                                 # 투명 배경의 빈 캔버스 생성
                                 merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
                                 
                                 for idx, p_img in enumerate(collected_pil_images):
-                                    # 크기 리사이징 (깨짐 방지 위해 고품질 리샘플링 사용)
+                                    # 크기 리사이징
                                     p_img_resized = p_img.resize((unit_size, unit_size), PILImage.LANCZOS)
-                                    # 캔버스에 붙여넣기 (x 좌표를 이동시켜가며)
-                                    merged_img.paste(p_img_resized, (idx * unit_size, 0))
+                                    # [수정] y좌표를 vertical_padding만큼 내려서 붙여넣기
+                                    merged_img.paste(p_img_resized, (idx * unit_size, vertical_padding))
                                 
                                 # 4. 합친 이미지를 엑셀에 삽입
                                 img_byte_arr = io.BytesIO()
