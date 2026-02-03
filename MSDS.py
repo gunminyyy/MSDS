@@ -7,21 +7,88 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from PIL import Image as PILImage
 import io
 import re
-import gc # 메모리 청소용
+import gc
+import numpy as np
+import os
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
 
-# (비밀번호 기능 제거됨)
-
-st.title("MSDS 양식 변환기 (그림 병합 배치)")
+st.title("MSDS 양식 변환기 (그림 자동 인식 정렬)")
 st.markdown("---")
+
+# --------------------------------------------------------------------------
+# [함수] 리소스 경로 찾기 (폴더 내 이미지 자동 로드용)
+# --------------------------------------------------------------------------
+def get_reference_images():
+    """
+    reference_imgs 폴더에 있는 모든 이미지를 읽어서 {파일명: 이미지객체}로 반환
+    """
+    img_folder = "reference_imgs" # 폴더 이름
+    ref_images = {}
+    
+    if not os.path.exists(img_folder):
+        return {}, False
+        
+    try:
+        file_list = sorted(os.listdir(img_folder)) 
+        for fname in file_list:
+            # [수정] .tif, .tiff 확장자 지원 추가
+            if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.tif', '.tiff')):
+                full_path = os.path.join(img_folder, fname)
+                try:
+                    pil_img = PILImage.open(full_path)
+                    ref_images[fname] = pil_img
+                except:
+                    continue
+        return ref_images, True
+    except:
+        return {}, False
+
+# [함수] 이미지 비교 매칭
+def find_best_match_name(src_img, ref_images):
+    best_score = float('inf')
+    best_name = None
+    try:
+        # 비교 정확도를 위해 RGB로 변환 후 흑백 처리 (TIFF 호환성)
+        if src_img.mode != 'RGB':
+            src_img = src_img.convert('RGB')
+            
+        src_small = src_img.resize((32, 32)).convert('L')
+        src_arr = np.array(src_small, dtype=np.int16)
+        
+        for name, ref_img in ref_images.items():
+            if ref_img.mode != 'RGB':
+                ref_img = ref_img.convert('RGB')
+                
+            ref_small = ref_img.resize((32, 32)).convert('L')
+            ref_arr = np.array(ref_small, dtype=np.int16)
+            diff = np.mean(np.abs(src_arr - ref_arr))
+            
+            if diff < best_score:
+                best_score = diff
+                best_name = name
+        
+        # 임계값 (유사도) 설정
+        if best_score < 60: return best_name
+        else: return None
+    except: return None
 
 # 2. 파일 업로드
 with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
         master_data_file = st.file_uploader("1. 중앙 데이터 (master_data.xlsx)", type="xlsx")
+        
+        # [상태 표시] 내장 이미지 로드 확인
+        loaded_refs, folder_exists = get_reference_images()
+        if folder_exists and loaded_refs:
+            st.success(f"✅ 내장된 기준 그림 {len(loaded_refs)}개를 로드했습니다.")
+        elif not folder_exists:
+            st.warning("⚠️ 'reference_imgs' 폴더가 없습니다. 그림 정렬이 작동하지 않습니다.")
+        else:
+            st.warning("⚠️ 폴더는 있지만 그림 파일이 없습니다.")
+
     with col2:
         template_file = st.file_uploader("2. 양식 파일 (통합 양식 GHS MSDS(K).xlsx)", type="xlsx")
 
@@ -45,7 +112,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("그림을 하나로 합쳐서 배치하는 중..."):
+            with st.spinner("그림 인식 및 정렬 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -101,7 +168,7 @@ with col_center:
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
                             # ---------------------------------------------------
-                            # [핵심 수정] 그림 병합 배치 (Image Merging)
+                            # [핵심 수정] 그림 인식 및 정렬 (내장 이미지 사용)
                             # ---------------------------------------------------
                             
                             # 1. 기존 그림 삭제
@@ -115,12 +182,13 @@ with col_center:
                                     except: preserved_imgs.append(img)
                                 dest_ws._images = preserved_imgs
 
-                            # 2. 원본 그림 수집
+                            # 2. 원본 그림 수집 & 매칭
                             img_row = 0
                             for i, row in enumerate(src_ws.iter_rows(values_only=True), 1):
                                 if "그림문자" in str(row[0]): img_row = i; break
                             
                             collected_pil_images = []
+                            
                             if img_row > 0 and hasattr(src_ws, '_images'):
                                 for img in src_ws._images:
                                     if hasattr(img, 'anchor'):
@@ -128,21 +196,32 @@ with col_center:
                                         if img_row - 2 <= r <= img_row + 1:
                                             if hasattr(img, '_data'):
                                                 pil_img = PILImage.open(io.BytesIO(img._data()))
-                                                collected_pil_images.append(pil_img)
+                                                
+                                                # [인식] 내장된 ref_images와 비교
+                                                matched_name = None
+                                                if loaded_refs:
+                                                    matched_name = find_best_match_name(pil_img, loaded_refs)
+                                                
+                                                sort_key = matched_name if matched_name else "Z_Unknown"
+                                                collected_pil_images.append((sort_key, pil_img))
                             
-                            # 3. 그림 합치기 (Stitching) - 1.77cm 고정 및 내부 정렬
-                            if collected_pil_images:
+                            # 3. 정렬 (파일명 기준 1.tif -> 2.tif ...)
+                            collected_pil_images.sort(key=lambda x: x[0])
+                            sorted_imgs = [item[1] for item in collected_pil_images]
+                            
+                            # 4. 그림 합치기 (Stitching) - 정밀 배치 유지
+                            if sorted_imgs:
                                 unit_size = 67 
                                 icon_size = 60 
                                 padding_top = 4 
                                 padding_left = (unit_size - icon_size) // 2 
                                 
-                                total_width = unit_size * len(collected_pil_images)
+                                total_width = unit_size * len(sorted_imgs)
                                 total_height = unit_size 
                                 
                                 merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
                                 
-                                for idx, p_img in enumerate(collected_pil_images):
+                                for idx, p_img in enumerate(sorted_imgs):
                                     p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
                                     x_pos = (idx * unit_size) + padding_left
                                     y_pos = padding_top
@@ -173,7 +252,6 @@ with col_center:
                 st.session_state['converted_files'] = new_files
                 st.session_state['download_data'] = new_download_data
                 
-                # [보안] 메모리 청소 (비밀번호는 없어도 데이터 흔적은 지움)
                 del df_master
                 if 'src_wb' in locals(): del src_wb
                 if 'dest_wb' in locals(): del dest_wb
@@ -181,9 +259,9 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 그림들이 깔끔하게 이어졌습니다.")
+                    st.success("완료! 그림들이 번호 순서대로 정렬되었습니다.")
         else:
-            st.error("파일을 모두 업로드해주세요.")
+            st.error("모든 파일(원본, 중앙DB, 양식)을 업로드해주세요.")
 
 with col_right:
     st.subheader("결과 다운로드")
