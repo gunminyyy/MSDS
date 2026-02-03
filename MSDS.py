@@ -12,24 +12,35 @@ import re
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
 
 # 2. 제목
-st.title("MSDS 양식 변환기 (수식 자동 연결)")
+st.title("MSDS 양식 변환기")
 st.markdown("---")
 
-# 3. 파일 설정
-with st.expander("📂 파일 설정 (필수)", expanded=True):
-    col_master, col_template = st.columns(2)
-    with col_master:
-        # 이 파일의 첫 번째 시트 내용을 '위험 안전문구' 시트로 만들어 넣습니다.
-        master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx", help="수식에 사용될 데이터 원본입니다.")
-    with col_template:
-        cff_k_template_file = st.file_uploader("2. CFF(K) 양식 파일", type="xlsx")
+# 3. 파일 설정 (모두 직접 업로드 방식으로 변경)
+with st.expander("📂 필수 파일 업로드", expanded=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        master_data_file = st.file_uploader(
+            "1. 최신 중앙 데이터 (master_data.xlsx)", 
+            type="xlsx", 
+            help="수식 데이터가 들어있는 엑셀 파일"
+        )
+    with col2:
+        # 양식 파일도 직접 업로드
+        template_file = st.file_uploader(
+            "2. 양식 파일 (통합 양식 GHS MSDS(K).xlsx)", 
+            type="xlsx",
+            help="수식이 걸려있는 빈 양식 파일"
+        )
 
+# 제품명 입력
 product_name_input = st.text_input("제품명을 입력하세요", help="이 값이 B7, B10에 입력됩니다.")
+
+# 4. 양식 선택
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 
 st.write("") 
 
-# 4. 메인 로직
+# 5. 메인 로직
 col_left, col_center, col_right = st.columns([4, 2, 4])
 
 if 'converted_files' not in st.session_state:
@@ -38,37 +49,42 @@ if 'converted_files' not in st.session_state:
 
 with col_left:
     st.subheader("3. 원본 파일 업로드")
-    uploaded_files = st.file_uploader("원본 데이터(텍스트/그림 포함)", type=["xlsx"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader(
+        "원본 데이터(텍스트/그림 포함)", 
+        type=["xlsx"], 
+        accept_multiple_files=True
+    )
 
 with col_center:
     st.write("") ; st.write("") ; st.write("")
     
     if st.button("▶ 변환 시작", use_container_width=True):
-        if uploaded_files and cff_k_template_file and product_name_input and master_data_file:
-            with st.spinner("데이터 동기화 및 수식 경로 수정 중..."):
+        # 3가지 파일과 제품명이 모두 있어야 실행
+        if uploaded_files and product_name_input and master_data_file and template_file:
+            with st.spinner("데이터 동기화 및 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
                 
-                # 1. 중앙 데이터 읽기 (첫 번째 시트만 사용)
+                # 1. 중앙 데이터 읽기
                 df_master = pd.read_excel(master_data_file, sheet_name=0)
                 
                 for uploaded_file in uploaded_files:
                     if option == "CFF(K)":
                         try:
-                            # 2. 파일 로드
+                            # 2. 원본(Source) 로드
                             src_wb = load_workbook(uploaded_file, data_only=True)
                             src_ws = src_wb.active
                             
-                            # 수식 유지를 위해 data_only=False
-                            dest_wb = load_workbook(io.BytesIO(cff_k_template_file.getvalue()))
+                            # 3. 양식(Target) 로드 (업로드된 파일 사용)
+                            # 매번 새로운 복사본을 만들기 위해 BytesIO 사용
+                            dest_wb = load_workbook(io.BytesIO(template_file.getvalue()))
                             dest_ws = dest_wb.active
                             
                             # ---------------------------------------------------
-                            # [1] 중앙 데이터 주입 ('위험 안전문구' 시트 생성)
+                            # [1] 중앙 데이터 동기화 ('위험 안전문구' 시트)
                             # ---------------------------------------------------
-                            target_sheet_name = '위험 안전문구' # 수식이 참조하는 시트명
-                            
+                            target_sheet_name = '위험 안전문구'
                             if target_sheet_name in dest_wb.sheetnames:
                                 data_ws = dest_wb[target_sheet_name]
                                 data_ws.delete_rows(1, data_ws.max_row)
@@ -79,29 +95,15 @@ with col_center:
                                 data_ws.append(r)
 
                             # ---------------------------------------------------
-                            # [2] 수식 경로 청소 (외부 링크 -> 내부 링크)
+                            # [2] 수식 경로 청소
                             # ---------------------------------------------------
-                            # 예: 'D:\...\[파일]시트'! -> '시트'! 로 변경
-                            # 정규표현식: '문자열[문자열]' 패턴을 찾아서 제거
-                            
                             for row in dest_ws.iter_rows():
                                 for cell in row:
-                                    if cell.data_type == 'f': # 수식인 경우
+                                    if cell.data_type == 'f':
                                         formula_str = str(cell.value)
-                                        # 외부 파일 경로 패턴 찾기 (작은 따옴표 안의 경로 + 대괄호 파일명)
-                                        # 간단하게 '['로 시작해서 ']'로 끝나는 파일명 부분을 포함한 경로를 날림
-                                        
-                                        # 1단계: 알려주신 특정 경로가 있다면 확실하게 제거
                                         if "ingredients CAS and EC 통합.xlsx]" in formula_str:
-                                            # 경로가 포함된 형태: 'D:\...\[file]Sheet'
-                                            # 이것을 'Sheet'로 바꿔야 함.
-                                            # 가장 쉬운 방법: path string을 찾아서 empty로 치환
-                                            
-                                            # 정규식: '드라이브명: ... [파일명]' 패턴을 찾음
                                             new_formula = re.sub(r"'?[a-zA-Z]:\\[^']*\['?[^']*'?.xlsx\]", "'", formula_str)
-                                            # 혹시 경로 없이 [파일명]만 있는 경우도 처리
                                             new_formula = re.sub(r"\[[^\]]*\.xlsx\]", "", new_formula)
-                                            
                                             cell.value = new_formula
 
                             # ---------------------------------------------------
@@ -111,7 +113,7 @@ with col_center:
                             dest_ws['B10'] = product_name_input
                             
                             # ---------------------------------------------------
-                            # B. 텍스트 복사 (기존 로직)
+                            # B. 텍스트 복사
                             # ---------------------------------------------------
                             start_row = 0; end_row = 0
                             for i, row in enumerate(src_ws.iter_rows(values_only=True), 1):
@@ -128,7 +130,7 @@ with col_center:
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
                             
                             # ---------------------------------------------------
-                            # C. 그림 복사 (기존 로직)
+                            # C. 그림 복사
                             # ---------------------------------------------------
                             img_row = 0
                             for i, row in enumerate(src_ws.iter_rows(values_only=True), 1):
@@ -160,9 +162,9 @@ with col_center:
                 st.session_state['download_data'] = new_download_data
                 
                 if new_files:
-                    st.success("완료! (수식 외부 경로가 내부 시트로 자동 연결되었습니다)")
+                    st.success("변환 완료!")
         else:
-            st.error("모든 파일과 제품명을 입력해주세요.")
+            st.error("중앙 데이터, 양식 파일, 원본 파일, 제품명을 모두 넣어주세요.")
 
 with col_right:
     st.subheader("결과 다운로드")
