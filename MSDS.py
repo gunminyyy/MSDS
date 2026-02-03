@@ -16,6 +16,9 @@ with st.expander("📂 중앙 데이터베이스 설정", expanded=True):
     if master_data_file:
         st.success("데이터베이스 로드 완료")
 
+# 제품명 입력 칸 추가
+product_name_input = st.text_input("제품명을 입력하세요", help="엑셀 양식에 기입될 제품명입니다.")
+
 # 4. 양식 선택 박스 (4가지 양식으로 수정)
 option = st.selectbox(
     "적용할 양식을 선택하세요",
@@ -61,7 +64,7 @@ with col2:
                     # matched_info = df_master[df_master['키워드'] == keyword]
                     
                     # 3. 양식 로드 및 데이터 쓰기 (나중에 파일 보내주시면 구현)
-                    # output_excel = write_to_template(option, matched_info)
+                    # output_excel = write_to_template(option, matched_info, product_name_input)
                     
                     file_name = f"{pdf_file.name.split('.')[0]}_{option}.xlsx"
                     new_files.append(file_name)
