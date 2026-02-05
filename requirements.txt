@@ -1,6 +1,6 @@
 streamlit
-pdfplumber
 pandas
 openpyxl
-xlrd
-pillow
+Pillow
+numpy
+pymupdf
