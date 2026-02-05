@@ -10,7 +10,7 @@ import re
 import gc
 import numpy as np
 import os
-import fitz  # PyMuPDF (PDF 처리용 라이브러리)
+import fitz  # PyMuPDF
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
@@ -100,7 +100,6 @@ if 'converted_files' not in st.session_state:
 
 with col_left:
     st.subheader("3. 원본 파일 업로드")
-    # [변경] PDF 파일 업로드 허용
     uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
 
 with col_center:
@@ -113,7 +112,7 @@ with col_center:
                 new_files = []
                 new_download_data = {}
                 
-                # 중앙 데이터 읽기 & 매핑 준비
+                # 중앙 데이터 읽기
                 try: 
                     df_master = pd.read_excel(master_data_file, sheet_name=0)
                     code_map = {}
@@ -128,7 +127,7 @@ with col_center:
                 for uploaded_file in uploaded_files:
                     if option == "CFF(K)":
                         try:
-                            # 1. PDF 로드 (메모리에서 읽기)
+                            # 1. PDF 로드
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
                             
                             # 2. 양식 파일 준비
@@ -137,7 +136,7 @@ with col_center:
                             dest_ws = dest_wb.active
 
                             # ---------------------------------------------------
-                            # [데이터 동기화 & 수식 수정] (기존 로직 유지)
+                            # [데이터 동기화 & 수식 수정]
                             # ---------------------------------------------------
                             target_sheet = '위험 안전문구'
                             if target_sheet in dest_wb.sheetnames: del dest_wb[target_sheet]
@@ -158,76 +157,118 @@ with col_center:
                             dest_ws['B10'] = product_name_input
                             
                             # ---------------------------------------------------
-                            # [신규] PDF 텍스트 분석 (유해성 문구 & H코드 추출)
+                            # [PDF 텍스트 분석]
                             # ---------------------------------------------------
                             full_text = ""
                             for page in doc:
                                 full_text += page.get_text()
 
-                            # A. 유해성 본문 추출 (B20 입력용)
-                            # "2. 유해성" ~ "예방조치문구" 사이의 텍스트를 찾되, 유연하게 검색
-                            # PDF는 줄바꿈이 많으므로 정규식 활용
-                            # (참고: PDF 구조에 따라 텍스트 추출 방식은 미세 조정이 필요할 수 있음)
-                            
-                            b20_text = ""
-                            # 줄바꿈 제거 후 검색
+                            # 줄바꿈 제거 (검색 용이성)
                             clean_text = full_text.replace("\n", " ")
-                            
-                            # 유해성 시작 찾기
+
+                            # [A] 유해성 본문 (B20)
                             start_match = re.search(r"2\.\s*유해성.*?위험성", clean_text)
                             end_match = re.search(r"예방조치문구", clean_text)
                             
+                            b20_text = ""
                             if start_match and end_match:
                                 start_idx = start_match.end()
                                 end_idx = end_match.start()
-                                raw_section = clean_text[start_idx:end_idx].strip()
-                                # 너무 길면 적당히 자르거나, 정제
-                                b20_text = raw_section[:1000] # 안전장치
+                                b20_text = clean_text[start_idx:end_idx].strip()[:1000]
                             
                             if b20_text:
                                 dest_ws['B20'] = b20_text
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
-                            # B. H코드 추출
-                            # 전체 텍스트에서 H코드 패턴 찾기 (PDF는 행/열 개념이 없으므로 전체 검색이 더 확실함)
-                            # 단, "유해성" 챕터 내부의 코드만 가져오기 위해 위에서 찾은 raw_section 활용 권장
-                            # 만약 전체에서 찾고 싶다면 clean_text 사용
+                            # [B] H코드 추출 및 입력 (B25 ~ B30)
+                            extracted_h_codes = []
+                            # clean_text 전체에서 H코드 찾기
+                            found_h_codes = re.findall(r"H\d{3}", clean_text)
+                            for code in found_h_codes:
+                                if code not in extracted_h_codes: extracted_h_codes.append(code)
                             
-                            extracted_codes = []
-                            # H + 숫자 3개 (예: H300)
-                            found_codes = re.findall(r"H\d{3}", clean_text)
-                            
-                            # 순서 유지하며 중복 제거
-                            for code in found_codes:
-                                if code not in extracted_codes:
-                                    extracted_codes.append(code)
-                            
-                            # 양식 B25부터 입력 & D열 매칭
+                            # B25 입력
                             current_target_row = 25
-                            for code in extracted_codes:
-                                if current_target_row > 30: break # B30까지만
-                                
-                                # B열: 코드 입력
+                            for code in extracted_h_codes:
+                                if current_target_row > 30: break
                                 dest_ws.cell(row=current_target_row, column=2).value = code
-                                
-                                # D열: 중앙 데이터 매칭
-                                matched_desc = code_map.get(code, "")
-                                dest_ws.cell(row=current_target_row, column=4).value = matched_desc
-                                
+                                dest_ws.cell(row=current_target_row, column=4).value = code_map.get(code, "")
                                 current_target_row += 1
-                                
-                            # 빈 행 숨기기 (B25 ~ B30)
+                            
+                            # B25~B30 숨김 처리
                             for r in range(25, 31):
-                                b_val = dest_ws.cell(row=r, column=2).value
-                                if not b_val:
+                                if not dest_ws.cell(row=r, column=2).value:
                                     dest_ws.row_dimensions[r].hidden = True
                                 else:
                                     dest_ws.row_dimensions[r].hidden = False
 
                             # ---------------------------------------------------
-                            # [신규] PDF 이미지 추출 및 정렬 (기존 로직 적용)
+                            # [신규] P코드 추출 (예방, 대응, 저장, 폐기)
                             # ---------------------------------------------------
-                            # 기존 그림 삭제
+                            
+                            # 섹션별 인덱스 찾기 (검색 범위 한정을 위해)
+                            idx_prevention = clean_text.find("예방", end_match.start() if end_match else 0)
+                            idx_response = clean_text.find("대응", idx_prevention)
+                            idx_storage = clean_text.find("저장", idx_response)
+                            idx_disposal = clean_text.find("폐기", idx_storage)
+                            
+                            # 섹션별 텍스트 자르기
+                            txt_prevention = ""
+                            txt_response = ""
+                            txt_storage = ""
+                            txt_disposal = ""
+                            
+                            if idx_prevention != -1 and idx_response != -1:
+                                txt_prevention = clean_text[idx_prevention:idx_response]
+                            if idx_response != -1 and idx_storage != -1:
+                                txt_response = clean_text[idx_response:idx_storage]
+                            if idx_storage != -1 and idx_disposal != -1:
+                                txt_storage = clean_text[idx_storage:idx_disposal]
+                            if idx_disposal != -1:
+                                # 폐기 다음 섹션("3.") 전까지
+                                next_section = re.search(r"3\.\s", clean_text[idx_disposal:])
+                                end_disposal = idx_disposal + next_section.start() if next_section else len(clean_text)
+                                txt_disposal = clean_text[idx_disposal:end_disposal]
+
+                            # 공통 함수: P코드 추출 및 셀 입력
+                            def fill_p_codes(target_text, start_row, end_row):
+                                # P코드 정규식 (P300+P310 형태 포함)
+                                p_codes = re.findall(r"P\d{3}(?:\+P\d{3})*", target_text)
+                                unique_p = []
+                                for p in p_codes:
+                                    if p not in unique_p: unique_p.append(p)
+                                
+                                # 숨김 취소 (내용 넣기 전 초기화)
+                                for r in range(start_row, end_row + 1):
+                                    dest_ws.row_dimensions[r].hidden = False
+                                
+                                curr = start_row
+                                for p_code in unique_p:
+                                    if curr > end_row: break
+                                    dest_ws.cell(row=curr, column=2).value = p_code
+                                    dest_ws.cell(row=curr, column=4).value = code_map.get(p_code, "")
+                                    curr += 1
+                                
+                                # 내용 없는 행 숨기기
+                                for r in range(start_row, end_row + 1):
+                                    if not dest_ws.cell(row=r, column=2).value:
+                                        dest_ws.row_dimensions[r].hidden = True
+
+                            # 1. 예방 (B32 ~ B41)
+                            fill_p_codes(txt_prevention, 32, 41)
+                            
+                            # 2. 대응 (B42 ~ B49)
+                            fill_p_codes(txt_response, 42, 49)
+                            
+                            # 3. 저장 (B50 ~ B52) - 기존 숨김 행 포함
+                            fill_p_codes(txt_storage, 50, 52)
+                            
+                            # 4. 폐기 (B53)
+                            fill_p_codes(txt_disposal, 53, 53)
+
+                            # ---------------------------------------------------
+                            # [기존 기능] PDF 이미지 추출 및 정렬
+                            # ---------------------------------------------------
                             target_anchor_row = 22
                             if hasattr(dest_ws, '_images'):
                                 preserved_imgs = []
@@ -239,21 +280,14 @@ with col_center:
                                 dest_ws._images = preserved_imgs
                             
                             collected_pil_images = []
-                            
-                            # PDF의 각 페이지에서 이미지 추출
                             for page_index in range(len(doc)):
                                 image_list = doc.get_page_images(page_index)
-                                
                                 for img_info in image_list:
                                     xref = img_info[0]
                                     base_image = doc.extract_image(xref)
                                     image_bytes = base_image["image"]
-                                    
                                     try:
-                                        # PIL 이미지 변환
                                         pil_img = PILImage.open(io.BytesIO(image_bytes))
-                                        
-                                        # [인식] 내장된 ref_images와 비교
                                         matched_name = None
                                         if loaded_refs:
                                             matched_name = find_best_match_name(pil_img, loaded_refs)
@@ -261,16 +295,9 @@ with col_center:
                                         if matched_name:
                                             sort_key = extract_number(matched_name)
                                             collected_pil_images.append((sort_key, pil_img))
-                                        else:
-                                            # 매칭 안 된건 무시하거나 뒤로 보냄 (여기선 무시 권장, 로고 등일 수 있음)
-                                            # 하지만 확실히 하기 위해 인식된 것만 수집
-                                            pass
-                                    except:
-                                        continue
+                                    except: continue
                             
-                            # 정렬 및 병합 (기존과 동일)
-                            # 중복 제거 (PDF는 같은 이미지가 여러번 나올 수 있음)
-                            # sort_key 기준으로 중복 제거
+                            # 중복 제거 및 정렬
                             unique_images = {}
                             for key, img in collected_pil_images:
                                 if key not in unique_images:
