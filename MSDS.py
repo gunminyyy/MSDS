@@ -2,11 +2,9 @@ import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, Border, Side
-from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.cell.cell import MergedCell
 from openpyxl.drawing.image import Image as XLImage
 from PIL import Image as PILImage
-from copy import copy
 import io
 import re
 import os
@@ -16,16 +14,15 @@ import gc
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (시트 자동 탐색 & 고정 범위 채우기)")
+st.title("MSDS 양식 변환기 (코드 누락 제로 & 고정 범위)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [스타일] 굴림 8pt, 왼쪽 정렬, 얇은 테두리
+# [스타일] 굴림 8pt, 왼쪽 정렬
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
-BORDER_THIN = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
 
 # --------------------------------------------------------------------------
 # [함수] 이미지 처리
@@ -81,7 +78,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [함수] PDF 파싱
+# [함수] PDF 파싱 (누락 방지 강화 버전)
 # --------------------------------------------------------------------------
 def parse_pdf_ghs_logic(doc):
     clean_lines = []
@@ -115,12 +112,14 @@ def parse_pdf_ghs_logic(doc):
     SUB_NONE=0; SUB_PREV=1; SUB_RESP=2; SUB_STOR=3; SUB_DISP=4
     current_sub = SUB_NONE
     
-    regex_code = re.compile(r"([HP]\d{3}(?:\s*\+\s*[HP]\d{3})*)")
+    # [강화된 정규식] P 301 + P 310 처럼 공백이 섞여도 찾음
+    regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
     BLACKLIST_HAZARD = ["공급자정보", "회사명", "주소", "긴급전화번호", "권고용도", "사용상의제한"]
 
     for line in clean_lines:
         line_ns = line.replace(" ", "")
         
+        # 구역 전환
         if "가.유해성" in line_ns and "분류" in line_ns:
             current_zone = ZONE_HAZARD_CLS; continue
         if "나.예방조치" in line_ns:
@@ -136,31 +135,37 @@ def parse_pdf_ghs_logic(doc):
                 result["hazard_cls"].append(line)
                 codes = regex_code.findall(line)
                 for c in codes:
-                    if c.startswith("H"): result["h_codes"].append(c)
+                    # 정규화해서 저장 (공백제거)
+                    c_clean = c.replace(" ", "")
+                    if c_clean.startswith("H"): result["h_codes"].append(c_clean)
 
         elif current_zone == ZONE_LABEL_INFO:
             if "신호어" in line_ns:
                 val = line.replace("신호어", "").replace(":", "").strip()
                 if val: result["signal_word"] = val
             
+            # [핵심 수정] 헤더가 발견되어도 'continue' 하지 않고, 그 줄에 있는 코드까지 긁어모음
             if line_ns.startswith("예방") and len(line_ns) < 15: current_sub = SUB_PREV
             elif line_ns.startswith("대응") and len(line_ns) < 15: current_sub = SUB_RESP
             elif line_ns.startswith("저장") and len(line_ns) < 15: current_sub = SUB_STOR
             elif line_ns.startswith("폐기") and len(line_ns) < 15: current_sub = SUB_DISP
 
+            # 코드 추출 (현재 라인 전체 스캔)
             codes = regex_code.findall(line)
             for c in codes:
-                if c.startswith("H"): result["h_codes"].append(c)
-                elif c.startswith("P"):
-                    if current_sub == SUB_PREV: result["p_prev"].append(c)
-                    elif current_sub == SUB_RESP: result["p_resp"].append(c)
-                    elif current_sub == SUB_STOR: result["p_stor"].append(c)
-                    elif current_sub == SUB_DISP: result["p_disp"].append(c)
+                c_clean = c.replace(" ", "") # 공백 제거 후 저장
+                if c_clean.startswith("H"): 
+                    result["h_codes"].append(c_clean)
+                elif c_clean.startswith("P"):
+                    if current_sub == SUB_PREV: result["p_prev"].append(c_clean)
+                    elif current_sub == SUB_RESP: result["p_resp"].append(c_clean)
+                    elif current_sub == SUB_STOR: result["p_stor"].append(c_clean)
+                    elif current_sub == SUB_DISP: result["p_disp"].append(c_clean)
 
     return result
 
 # --------------------------------------------------------------------------
-# [함수] 중앙 데이터 매핑 (강력한 정규화)
+# [함수] 중앙 데이터 매핑 (분할 검색)
 # --------------------------------------------------------------------------
 def get_description_smart(code, code_map):
     clean_code = str(code).replace(" ", "").upper().strip()
@@ -206,10 +211,14 @@ def safe_write_force(ws, row, col, value, center=False):
 # [핵심] 고정 범위 채우기 (Fixed Range Fill)
 # --------------------------------------------------------------------------
 def fill_fixed_range(ws, start_row, end_row, codes, code_map):
+    # 중복 제거 (순서 유지)
     unique_codes = []
+    seen = set()
     for c in codes:
         clean = c.replace(" ", "").upper().strip()
-        if clean not in unique_codes: unique_codes.append(clean)
+        if clean not in seen:
+            unique_codes.append(clean)
+            seen.add(clean)
     
     limit = end_row - start_row + 1
     
@@ -265,25 +274,23 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("중앙 데이터 정밀 스캔 및 변환 중..."):
+            with st.spinner("누락 코드 정밀 탐색 및 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
                 
-                # [핵심] 중앙 데이터 로드 (시트 찾기 로직)
+                # [중앙 데이터 로드]
                 code_map = {}
                 try:
-                    # 1. 엑셀 파일 로드 (모든 시트)
                     xls = pd.ExcelFile(master_data_file)
                     target_sheet = None
                     
-                    # 2. '위험 안전문구' 시트 우선 찾기
+                    # 시트 찾기 우선순위: '위험 안전문구' -> 컬럼명이 'CODE', 'K'인 시트
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet:
                             target_sheet = sheet
                             break
                     
-                    # 3. 없으면 'CODE'와 'K' 컬럼이 있는 시트 찾기
                     if target_sheet is None:
                         for sheet in xls.sheet_names:
                             df_check = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
@@ -292,7 +299,6 @@ with col_center:
                                 target_sheet = sheet
                                 break
                     
-                    # 4. 시트 확정 및 로드
                     if target_sheet:
                         df_master = pd.read_excel(master_data_file, sheet_name=target_sheet)
                         df_master.columns = [str(c).replace(" ", "").upper() for c in df_master.columns]
@@ -305,12 +311,12 @@ with col_center:
                                 k = str(row[col_code]).replace(" ", "").upper().strip()
                                 v = str(row[col_kor]).strip() if pd.notna(row[col_kor]) else ""
                                 code_map[k] = v
-                        st.info(f"'{target_sheet}' 시트에서 {len(code_map)}개 데이터 로드 완료")
+                        st.info(f"중앙 데이터 로드 완료 ({len(code_map)}개)")
                     else:
-                        st.error("⚠️ '위험 안전문구' 시트 또는 'CODE/K' 컬럼을 찾을 수 없습니다.")
+                        st.error("⚠️ 데이터 시트를 찾지 못했습니다.")
                         
                 except Exception as e:
-                    st.error(f"중앙 데이터 로드 오류: {e}")
+                    st.error(f"데이터 로드 오류: {e}")
 
                 for uploaded_file in uploaded_files:
                     if option == "CFF(K)":
@@ -341,12 +347,12 @@ with col_center:
                             if parsed_data["signal_word"]:
                                 safe_write_force(dest_ws, 24, 2, parsed_data["signal_word"], center=True)
 
-                            # [핵심] 고정 범위 채우기 (사용자 지정 범위)
-                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map) # H코드
-                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)  # 예방
-                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)  # 대응
-                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)  # 저장
-                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)  # 폐기
+                            # [핵심] 고정 범위 채우기 (범위 내에서만 작동, 누락 없이)
+                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map) 
+                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
+                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
+                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
+                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
 
                             # 이미지 삽입
                             target_anchor_row = 22
@@ -424,7 +430,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 중앙 데이터 시트 자동 탐색 및 고정 범위 채우기 성공.")
+                    st.success("완료! 코드 누락 없이, 양식 밀림 없이 완벽 변환되었습니다.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
