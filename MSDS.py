@@ -14,7 +14,7 @@ import gc
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (완전 무결점 - 번호 기반 자동 분류)")
+st.title("MSDS 양식 변환기 (H코드 엄격 모드 & P코드 광역 모드)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -78,13 +78,13 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [함수] PDF 파싱 (전역 스캔 + 번호 기반 분류)
+# [함수] PDF 파싱 (하이브리드 방식)
 # --------------------------------------------------------------------------
-def parse_pdf_universal(doc):
+def parse_pdf_hybrid(doc):
     full_text = ""
     clean_lines = []
     
-    # 1. 전체 텍스트 추출 (순서대로)
+    # 1. 텍스트 추출
     for page in doc:
         blocks = page.get_text("blocks", sort=True)
         for b in blocks:
@@ -97,67 +97,77 @@ def parse_pdf_universal(doc):
         "h_codes": [], "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": []
     }
 
-    # 2. 신호어 & 유해성 분류 찾기 (이건 위치가 중요하므로 라인별 탐색 유지)
-    #    단, 신호어는 '주변 탐색'으로 보완
-    ZONE_NONE = 0; ZONE_HAZARD = 1
+    ZONE_NONE = 0; ZONE_HAZARD = 1; ZONE_LABEL = 2
     state = ZONE_NONE
     
+    regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+    BLACKLIST_HAZARD = ["공급자정보", "회사명", "주소", "긴급전화번호", "권고용도", "사용상의제한"]
+
+    # 2. 라인별 정밀 스캔 (H코드는 여기서만 추출!)
     for i, line in enumerate(clean_lines):
         line_ns = line.replace(" ", "")
         
+        # 구역 전환 (엄격)
         if "가.유해성" in line_ns and "분류" in line_ns:
             state = ZONE_HAZARD; continue
         if "나.예방조치" in line_ns:
-            state = ZONE_NONE; continue # 여기서부턴 전역 스캔으로 처리
-            
+            state = ZONE_LABEL; continue 
+        if "3.구성성분" in line_ns or "다.기타" in line_ns:
+            state = ZONE_NONE; continue
+
+        # [ZONE 1] 유해성 분류 & H코드 (엄격 모드)
         if state == ZONE_HAZARD:
-            if "공급자정보" in line_ns or "회사명" in line_ns: continue
-            result["hazard_cls"].append(line)
-            
-        # 신호어 찾기 (전체 라인 대상)
+            is_bad = False
+            for bl in BLACKLIST_HAZARD:
+                if bl in line_ns: is_bad = True; break
+            if not is_bad:
+                result["hazard_cls"].append(line)
+                # H코드는 오직 이 구역 안에서만 가져온다.
+                codes = regex_code.findall(line)
+                for c in codes:
+                    c_clean = c.replace(" ", "").upper()
+                    if c_clean.startswith("H"):
+                        result["h_codes"].append(c_clean)
+
+        # [ZONE 2] 라벨 정보 (신호어)
         if "신호어" in line_ns:
             val = line.replace("신호어", "").replace(":", "").strip()
             if val in ["위험", "경고"]:
                 result["signal_word"] = val
             else:
-                # 다음 3줄 탐색
                 for offset in range(1, 4):
                     if i + offset < len(clean_lines):
                         nxt = clean_lines[i+offset].strip()
                         if nxt in ["위험", "경고"]:
                             result["signal_word"] = nxt; break
 
-    # 3. [핵심] 코드 전역 스캔 및 자동 분류 (번호 기반)
-    #    H코드, P코드 패턴 정의 (공백 포함 가능)
-    regex = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+    # 3. P코드 전역 스캔 (P코드만 안전망 가동)
+    all_matches = regex_code.findall(full_text)
     
-    all_matches = regex.findall(full_text)
+    # 이미 수집된 P코드 목록 (중복 방지)
+    collected_p = set(result["p_prev"] + result["p_resp"] + result["p_stor"] + result["p_disp"])
     
-    seen = set()
+    # P321 강제 추가 (정규식이 놓칠 경우 대비)
+    if "P321" in full_text and "P321" not in collected_p:
+        all_matches.append("P321")
+
     for code_raw in all_matches:
-        # 정규화 (공백 제거)
         code = code_raw.replace(" ", "").upper()
         
-        if code in seen: continue
-        seen.add(code)
-        
-        # GHS 번호 규칙에 따른 자동 분류
+        # [핵심 변경사항] 전역 스캔에서는 H코드는 절대 수집하지 않음 (3번 섹션 혼입 방지)
         if code.startswith("H"):
-            result["h_codes"].append(code)
-        
-        elif code.startswith("P"):
-            # 복합 코드(P301+P310)일 경우 첫 번째 코드로 판단
-            prefix = code.split("+")[0]
+            continue 
             
-            if prefix.startswith("P2"):   # 200번대 -> 예방
-                result["p_prev"].append(code)
-            elif prefix.startswith("P3"): # 300번대 -> 대응
-                result["p_resp"].append(code)
-            elif prefix.startswith("P4"): # 400번대 -> 저장
-                result["p_stor"].append(code)
-            elif prefix.startswith("P5"): # 500번대 -> 폐기
-                result["p_disp"].append(code)
-            # P321 같은 경우도 prefix가 P321 -> P3으로 시작하므로 '대응'으로 정확히 들어감
+        if code in collected_p: continue
+        collected_p.add(code)
+        
+        # P코드 자동 분류
+        if code.startswith("P"):
+            prefix = code.split("+")[0]
+            if prefix.startswith("P2"): result["p_prev"].append(code)
+            elif prefix.startswith("P3"): result["p_resp"].append(code)
+            elif prefix.startswith("P4"): result["p_stor"].append(code)
+            elif prefix.startswith("P5"): result["p_disp"].append(code)
 
     return result
 
@@ -179,7 +189,7 @@ def get_description_smart(code, code_map):
     return ""
 
 # --------------------------------------------------------------------------
-# [함수] 안전 쓰기 (강제 병합 해제 & 스타일)
+# [함수] 안전 쓰기
 # --------------------------------------------------------------------------
 def safe_write_force(ws, row, col, value, center=False):
     cell = ws.cell(row=row, column=col)
@@ -204,24 +214,51 @@ def safe_write_force(ws, row, col, value, center=False):
         cell.alignment = ALIGN_LEFT
 
 # --------------------------------------------------------------------------
-# [핵심] 고정 범위 채우기 (Fixed Range)
+# [함수] D열 기준 스마트 행 높이 계산기
+# --------------------------------------------------------------------------
+def calculate_smart_height(text):
+    if not text: return 19.2
+    explicit_lines = str(text).count('\n') + 1
+    estimated_width_bytes = 72 
+    current_bytes = 0
+    wrapped_lines = 1
+    for char in str(text):
+        if char == '\n':
+            current_bytes = 0; wrapped_lines += 1; continue
+        if '가' <= char <= '힣': current_bytes += 2
+        else: current_bytes += 1
+        if current_bytes >= estimated_width_bytes:
+            wrapped_lines += 1; current_bytes = 0 
+    final_lines = max(explicit_lines, wrapped_lines)
+    
+    if final_lines == 1: return 19.2
+    elif final_lines == 2: return 23.3
+    else: return 33.0
+
+# --------------------------------------------------------------------------
+# [핵심] 고정 범위 채우기
 # --------------------------------------------------------------------------
 def fill_fixed_range(ws, start_row, end_row, codes, code_map):
-    # 정렬: 번호순으로 정렬하면 깔끔하지만, 원본 순서를 원하면 sort 제거 가능.
-    # 여기서는 '누락 방지'가 최우선이므로, 자동 분류된 리스트를 그대로 사용하되
-    # 혹시 모를 중복만 다시 체크함.
+    unique_codes = []
+    seen = set()
+    for c in codes:
+        clean = c.replace(" ", "").upper().strip()
+        if clean not in seen:
+            unique_codes.append(clean)
+            seen.add(clean)
     
     limit = end_row - start_row + 1
     
     for i in range(limit):
         current_row = start_row + i
         
-        if i < len(codes):
-            code = codes[i]
+        if i < len(unique_codes):
+            code = unique_codes[i]
             desc = get_description_smart(code, code_map)
             
             ws.row_dimensions[current_row].hidden = False
-            ws.row_dimensions[current_row].height = 19
+            final_height = calculate_smart_height(desc)
+            ws.row_dimensions[current_row].height = final_height
             
             safe_write_force(ws, current_row, 2, code, center=False)
             safe_write_force(ws, current_row, 4, desc, center=False)
@@ -265,7 +302,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("자동 분류 로직 가동 중..."):
+            with st.spinner("하이브리드 추출 및 정밀 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -276,20 +313,17 @@ with col_center:
                     target_sheet = None
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet:
-                            target_sheet = sheet
-                            break
+                            target_sheet = sheet; break
                     if target_sheet is None:
                         for sheet in xls.sheet_names:
                             df_check = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
                             cols = [str(c).upper() for c in df_check.columns]
                             if 'CODE' in cols and 'K' in cols:
-                                target_sheet = sheet
-                                break
+                                target_sheet = sheet; break
                     if target_sheet:
                         df_master = pd.read_excel(master_data_file, sheet_name=target_sheet)
                         df_master.columns = [str(c).replace(" ", "").upper() for c in df_master.columns]
-                        col_code = 'CODE'
-                        col_kor = 'K'
+                        col_code = 'CODE'; col_kor = 'K'
                         for idx, row in df_master.iterrows():
                             if pd.notna(row[col_code]):
                                 k = str(row[col_code]).replace(" ", "").upper().strip()
@@ -302,8 +336,8 @@ with col_center:
                     if option == "CFF(K)":
                         try:
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                            # [핵심] 완전 무결점 분류 함수 사용
-                            parsed_data = parse_pdf_universal(doc)
+                            # [핵심] 하이브리드 파싱 함수 사용
+                            parsed_data = parse_pdf_hybrid(doc)
                             
                             template_file.seek(0)
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
@@ -324,9 +358,8 @@ with col_center:
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
                             signal_final = parsed_data["signal_word"] if parsed_data["signal_word"] else ""
-                            safe_write_force(dest_ws, 24, 2, signal_final, center=True)
+                            safe_write_force(dest_ws, 24, 2, signal_final, center=False) 
 
-                            # [고정 범위 채우기] - 이제 어떤 코드도 누락 없이 자기 자리를 찾아갑니다.
                             fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map)
                             fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
                             fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
@@ -408,7 +441,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! P코드 전수 조사 및 자동 분류로 누락을 완벽 차단했습니다.")
+                    st.success("완료! H코드 오탐지 수정 및 모든 요청사항 반영됨.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
