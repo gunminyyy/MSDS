@@ -4,6 +4,7 @@ from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.cell.cell import MergedCell # [필수] 병합 셀 감지용
 from PIL import Image as PILImage
 import io
 import re
@@ -14,7 +15,7 @@ import fitz  # PyMuPDF
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (최종 완성 - 행 높이/수식/위치 완벽 제어)")
+st.title("MSDS 양식 변환기 (최종 - 병합 충돌 자동 해결)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -96,23 +97,15 @@ def parse_pdf_ghs_logic(doc):
                 if not is_noise: clean_lines.append(line_str)
 
     result = {
-        "hazard_cls": [],
-        "signal_word": "",
-        "h_codes": [],
-        "p_prev": [],
-        "p_resp": [],
-        "p_stor": [],
-        "p_disp": []
+        "hazard_cls": [], "signal_word": "", "h_codes": [],
+        "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": []
     }
 
     ZONE_NONE = 0
     ZONE_HAZARD_CLS = 1
     ZONE_LABEL_INFO = 2
     
-    SUBZONE_PREV = 11
-    SUBZONE_RESP = 12
-    SUBZONE_STOR = 13
-    SUBZONE_DISP = 14
+    SUBZONE_PREV = 11; SUBZONE_RESP = 12; SUBZONE_STOR = 13; SUBZONE_DISP = 14
 
     current_zone = ZONE_NONE
     current_subzone = None
@@ -162,36 +155,47 @@ def parse_pdf_ghs_logic(doc):
     return result
 
 # --------------------------------------------------------------------------
-# [함수] 동적 쓰기 (행 높이 19 고정 & 수식 제거 & 위치 자동 추적)
+# [핵심] 안전 쓰기 함수 (병합된 셀이면 해제 후 입력)
+# --------------------------------------------------------------------------
+def safe_write(ws, row, col, value):
+    cell = ws.cell(row=row, column=col)
+    
+    # 해당 셀이 병합된 셀의 일부인지 확인 (MergedCell 객체인지)
+    if isinstance(cell, MergedCell):
+        # 병합된 범위 찾아서 해제
+        for merged_range in list(ws.merged_cells.ranges):
+            if cell.coordinate in merged_range:
+                ws.unmerge_cells(str(merged_range))
+                break
+        # 해제 후 다시 셀 객체 가져오기 (이제 일반 Cell임)
+        cell = ws.cell(row=row, column=col)
+    
+    cell.value = value
+
+# --------------------------------------------------------------------------
+# [함수] 동적 쓰기 (safe_write 적용)
 # --------------------------------------------------------------------------
 def write_section_dynamic(ws, start_keyword, next_keyword, codes, code_map):
-    # 1. 시작 행 찾기 (밀려난 위치를 고려해 매번 1부터 다시 찾음)
     start_row = -1
-    # 검색 범위를 300까지 늘려 넉넉하게 잡음
     for row in range(1, 300):
         val1 = str(ws.cell(row=row, column=1).value)
         val2 = str(ws.cell(row=row, column=2).value)
-        # 키워드 매칭
         if (start_keyword in val1) or (start_keyword in val2):
-            start_row = row
-            break
+            start_row = row; break
     
     if start_row == -1: return 
 
-    # 2. 다음 섹션 행 찾기
     next_row = -1
     for row in range(start_row + 1, 300):
         val1 = str(ws.cell(row=row, column=1).value)
         val2 = str(ws.cell(row=row, column=2).value)
         if next_keyword and (next_keyword in val1 or next_keyword in val2):
-            next_row = row
-            break
+            next_row = row; break
     
-    if next_row == -1: next_row = start_row + 10 # 못 찾으면 임의 지정
+    if next_row == -1: next_row = start_row + 10 
 
     available_rows = next_row - start_row - 1
     
-    # 중복 제거 및 정규화
     unique_codes = []
     for c in codes:
         clean_c = c.replace(" ", "").strip().upper()
@@ -199,46 +203,38 @@ def write_section_dynamic(ws, start_keyword, next_keyword, codes, code_map):
     
     required_rows = len(unique_codes)
 
-    # 3. 행 부족 시 삽입 (밀림 방지)
     if required_rows > available_rows:
         rows_to_add = required_rows - available_rows
         ws.insert_rows(next_row, amount=rows_to_add)
-        # 삽입 후 next_row 갱신 (삽입된 만큼 뒤로 밀림)
-        # 하지만 아래 로직은 start_row 기준으로 쓰기 때문에 next_row는 '끝 지점' 마킹용으로만 씀
     
-    # 4. 데이터 쓰기
     current_r = start_row + 1
     
-    # (1) 코드 입력
     for code in unique_codes:
-        # [요청사항 반영] 코드 행 높이 19 고정
         ws.row_dimensions[current_r].height = 19
         ws.row_dimensions[current_r].hidden = False
         
-        ws.cell(row=current_r, column=2).value = code
+        # [수정] safe_write 사용하여 병합 충돌 방지
+        safe_write(ws, current_r, 2, code) # B열
         
-        # [요청사항 반영] 수식 제거 및 매핑
         desc = code_map.get(code, "")
-        ws.cell(row=current_r, column=4).value = desc
+        safe_write(ws, current_r, 4, desc) # D열
         
         current_r += 1
     
-    # (2) 남은 행 정리 (빈 행 숨김 + 수식 제거)
-    # 행 삽입 후 다시 다음 섹션 위치를 정확히 찾음
+    # 빈 행 처리 (다시 위치 찾기)
     real_next_row = -1
     for row in range(current_r, 300):
         val1 = str(ws.cell(row=row, column=1).value)
         val2 = str(ws.cell(row=row, column=2).value)
         if next_keyword and (next_keyword in val1 or next_keyword in val2):
-            real_next_row = row
-            break
+            real_next_row = row; break
     
     if real_next_row == -1: real_next_row = current_r 
 
     for r in range(current_r, real_next_row):
-        ws.cell(row=r, column=2).value = "" # 코드 지움
-        ws.cell(row=r, column=4).value = "" # 수식/내용 지움 (완전 초기화)
-        ws.row_dimensions[r].hidden = True # 숨김
+        safe_write(ws, r, 2, "")
+        safe_write(ws, r, 4, "")
+        ws.row_dimensions[r].hidden = True
 
 # 2. 파일 업로드
 with st.expander("📂 필수 파일 업로드", expanded=True):
@@ -320,21 +316,19 @@ with col_center:
                             
                             if parsed_data["hazard_cls"]:
                                 b20_text = "\n".join(parsed_data["hazard_cls"])
-                                dest_ws['B20'] = b20_text
+                                safe_write(dest_ws, 20, 2, b20_text) # B20
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
                             if parsed_data["signal_word"]:
-                                dest_ws['B24'] = parsed_data["signal_word"]
+                                safe_write(dest_ws, 24, 2, parsed_data["signal_word"]) # B24
                                 dest_ws['B24'].alignment = Alignment(horizontal='center', vertical='center')
 
-                            # [동적 쓰기 실행] - 순차적 실행 (위치 자동 추적)
                             write_section_dynamic(dest_ws, "유해·위험문구", "예방", parsed_data["h_codes"], code_map)
                             write_section_dynamic(dest_ws, "예방", "대응", parsed_data["p_prev"], code_map)
                             write_section_dynamic(dest_ws, "대응", "저장", parsed_data["p_resp"], code_map)
                             write_section_dynamic(dest_ws, "저장", "폐기", parsed_data["p_stor"], code_map)
                             write_section_dynamic(dest_ws, "폐기", "3.", parsed_data["p_disp"], code_map)
 
-                            # 이미지 정렬
                             target_anchor_row = 22
                             if hasattr(dest_ws, '_images'):
                                 preserved_imgs = []
@@ -410,7 +404,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 행 동적 추가 및 데이터 매핑이 완벽하게 처리되었습니다.")
+                    st.success("완료! 행 동적 추가 및 병합 오류 해결.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
