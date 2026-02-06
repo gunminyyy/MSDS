@@ -1,29 +1,28 @@
 import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font
-from openpyxl.utils.dataframe import dataframe_to_rows  # [수정] 누락된 import 복구
+from openpyxl.styles import Alignment, Font, Border, Side
+from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.cell.cell import MergedCell
-from openpyxl.drawing.image import Image as XLImage
+from copy import copy # [필수] 스타일 복사를 위해 필요
 from PIL import Image as PILImage
 import io
 import re
-import gc
 import os
 import fitz  # PyMuPDF
 import numpy as np
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (오류 수정 완결판)")
+st.title("MSDS 양식 변환기 (행 복제 & 스타일 완벽 이식)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [스타일 정의] 굴림 8pt (테두리 없음)
+# [스타일 정의] 굴림 8pt, 왼쪽 정렬
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
-ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
+BORDER_THIN = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
 
 # --------------------------------------------------------------------------
 # [함수] 이미지 처리
@@ -79,7 +78,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [함수] PDF 텍스트 파싱
+# [함수] PDF 파싱
 # --------------------------------------------------------------------------
 def parse_pdf_ghs_logic(doc):
     clean_lines = []
@@ -110,7 +109,6 @@ def parse_pdf_ghs_logic(doc):
 
     ZONE_NONE = 0; ZONE_HAZARD_CLS = 1; ZONE_LABEL_INFO = 2
     current_zone = ZONE_NONE
-    
     SUB_NONE=0; SUB_PREV=1; SUB_RESP=2; SUB_STOR=3; SUB_DISP=4
     current_sub = SUB_NONE
     
@@ -163,11 +161,8 @@ def parse_pdf_ghs_logic(doc):
 # --------------------------------------------------------------------------
 def get_description_smart(code, code_map):
     clean_code = code.replace(" ", "").upper().strip()
-    
     if clean_code in code_map:
         return code_map[clean_code]
-    
-    # + 기호로 분리해서 검색
     if "+" in clean_code:
         parts = clean_code.split("+")
         found_texts = []
@@ -176,39 +171,63 @@ def get_description_smart(code, code_map):
                 found_texts.append(code_map[p])
         if found_texts:
             return " ".join(found_texts)
-            
     return ""
 
 # --------------------------------------------------------------------------
-# [함수] 셀 스타일 및 쓰기 (굴림 8pt, 병합 해제)
+# [핵심] 행 스타일 복사 함수 (행 전체 서식 복제)
 # --------------------------------------------------------------------------
-def apply_style_simple(cell, is_code=False):
-    cell.font = FONT_STYLE
-    if is_code:
-        cell.alignment = ALIGN_CENTER
-    else:
-        cell.alignment = ALIGN_LEFT
-
-def safe_write_simple(ws, row, col, value, is_code=False):
-    cell = ws.cell(row=row, column=col)
-    try:
-        if isinstance(cell, MergedCell):
-            for rng in ws.merged_cells.ranges:
-                if cell.coordinate in rng:
-                    ws.unmerge_cells(str(rng))
-                    break
-            cell = ws.cell(row=row, column=col)
-    except: pass
-
-    cell.value = value
-    apply_style_simple(cell, is_code)
-
-# --------------------------------------------------------------------------
-# [함수] 스마트 행 쓰기 (Offset 보정 로직 적용)
-# --------------------------------------------------------------------------
-def write_ghs_data_final(ws, parsed_data, code_map):
+def copy_row_style(ws, source_row_idx, target_row_idx):
+    """
+    source_row_idx의 모든 셀 스타일을 target_row_idx로 복사합니다.
+    """
+    # 높이 복사
+    ws.row_dimensions[target_row_idx].height = ws.row_dimensions[source_row_idx].height
     
-    # 1. 초기 앵커 찾기
+    # 셀 단위 스타일 복사 (A열부터 K열 정도까지)
+    for col in range(1, 15): 
+        source_cell = ws.cell(row=source_row_idx, column=col)
+        target_cell = ws.cell(row=target_row_idx, column=col)
+        
+        # 스타일이 있는 경우에만 복사
+        if source_cell.has_style:
+            # 주의: _style을 직접 복사하는 것이 가장 빠르고 확실함
+            try:
+                target_cell._style = copy(source_cell._style)
+            except:
+                # _style 복사가 안되면 수동 속성 복사 (안전장치)
+                target_cell.font = copy(source_cell.font)
+                target_cell.border = copy(source_cell.border)
+                target_cell.fill = copy(source_cell.fill)
+                target_cell.number_format = copy(source_cell.number_format)
+                target_cell.protection = copy(source_cell.protection)
+                target_cell.alignment = copy(source_cell.alignment)
+
+# --------------------------------------------------------------------------
+# [함수] 안전 쓰기 (서식은 건드리지 않고 값만 넣음)
+# --------------------------------------------------------------------------
+def safe_write_value_only(ws, row, col, value):
+    cell = ws.cell(row=row, column=col)
+    # 병합된 셀이면 해제 (데이터 입력 필수)
+    if isinstance(cell, MergedCell):
+        for rng in ws.merged_cells.ranges:
+            if cell.coordinate in rng:
+                ws.unmerge_cells(str(rng))
+                break
+        cell = ws.cell(row=row, column=col) # 갱신
+
+    # 값 입력
+    cell.value = value
+    
+    # 폰트/정렬 강제 적용 (사용자 요청: 굴림 8pt, 왼쪽)
+    cell.font = FONT_STYLE
+    cell.alignment = ALIGN_LEFT
+    cell.border = BORDER_THIN
+
+# --------------------------------------------------------------------------
+# [함수] 스마트 행 관리 (행 복제 방식)
+# --------------------------------------------------------------------------
+def write_ghs_data_clone_row(ws, parsed_data, code_map):
+    
     anchors = {"H": -1, "PREV": -1, "RESP": -1, "STOR": -1, "DISP": -1}
     for r in range(1, 150):
         val = str(ws.cell(row=r, column=2).value).replace(" ", "")
@@ -218,16 +237,13 @@ def write_ghs_data_final(ws, parsed_data, code_map):
         elif val == "저장": anchors["STOR"] = r
         elif val == "폐기": anchors["DISP"] = r
     
-    # 안전장치 (기본값)
     if anchors["H"] == -1: anchors["H"] = 24
     if anchors["PREV"] == -1: anchors["PREV"] = 31
     if anchors["RESP"] == -1: anchors["RESP"] = 41
     if anchors["STOR"] == -1: anchors["STOR"] = 49
     if anchors["DISP"] == -1: anchors["DISP"] = 52
 
-    # 2. [중요] Offset 누적 변수
-    # 행을 추가할 때마다 이 변수가 늘어나며, 다음 섹션의 위치를 보정합니다.
-    current_offset = 0 
+    offset = 0 
     
     sections = [
         ("H", parsed_data["h_codes"], "PREV"),
@@ -239,53 +255,62 @@ def write_ghs_data_final(ws, parsed_data, code_map):
     
     for section_name, codes, next_section_name in sections:
         
-        # 현재 섹션의 실제 시작 행 = 초기 앵커 + 누적된 오프셋 + 1(헤더 다음줄)
-        start_row = anchors[section_name] + current_offset + 1
+        # 데이터 시작 행 (헤더 바로 다음)
+        start_row = anchors[section_name] + offset + 1
         
-        # 다음 섹션의 실제 헤더 위치 계산
+        # 끝 지점 계산
         if next_section_name == "END":
-            next_header_row = start_row + 1 
+            next_header_row = start_row + 1
         else:
-            # 다음 섹션 헤더도 current_offset만큼 이미 아래로 밀려나 있음
-            next_header_row = anchors[next_section_name] + current_offset
+            next_header_row = anchors[next_section_name] + offset
             
-        available_space = next_header_row - start_row
+        capacity = next_header_row - start_row
         
+        # 코드 정규화
         unique_codes = []
         for c in codes:
             clean = c.replace(" ", "").upper().strip()
             if clean not in unique_codes: unique_codes.append(clean)
         
-        needed_rows = len(unique_codes)
+        needed = len(unique_codes)
         
-        # 행 부족 시 추가
-        if needed_rows > available_space:
-            rows_to_add = needed_rows - available_space
-            # 다음 헤더 위치 직전에 삽입하여 공간 확보
-            ws.insert_rows(next_header_row, amount=rows_to_add)
+        # [핵심] 행 부족 시 -> "행 삽입" 후 "첫 줄 서식 복사"
+        if needed > capacity:
+            rows_to_add = needed - capacity
+            insert_pos = next_header_row 
             
-            # [중요] 행을 추가했으니, 그 다음 섹션들은 그만큼 더 밀려나게 됨
-            current_offset += rows_to_add
-            available_space += rows_to_add
+            # 1. 행 삽입 (깡통 행 생성)
+            ws.insert_rows(insert_pos, amount=rows_to_add)
+            
+            # 2. 서식 복사 (Start Row의 스타일을 새로 생긴 행들에 덮어씌움)
+            # Start Row는 해당 섹션의 첫 번째 줄이므로, 올바른 양식을 가지고 있음
+            template_row = start_row 
+            
+            for r_idx in range(rows_to_add):
+                target_r = insert_pos + r_idx
+                copy_row_style(ws, template_row, target_r)
+            
+            offset += rows_to_add
+            capacity += rows_to_add
         
         # 데이터 쓰기
         curr = start_row
         for i, code in enumerate(unique_codes):
             ws.row_dimensions[curr].hidden = False
-            ws.row_dimensions[curr].height = 19
             
-            safe_write_simple(ws, curr, 2, code, True)
+            # 값 입력 (함수 내에서 굴림 8pt, 왼쪽 정렬 적용)
+            safe_write_value_only(ws, curr, 2, code) # B열
             
             desc = get_description_smart(code, code_map)
-            safe_write_simple(ws, curr, 4, desc, False)
+            safe_write_value_only(ws, curr, 4, desc) # D열
             
             curr += 1
             
-        # 남은 공간 처리
-        limit_row = start_row + available_space
+        # 남은 빈 공간 정리
+        limit_row = start_row + capacity
         for r in range(curr, limit_row):
-            safe_write_simple(ws, r, 2, "", True)
-            safe_write_simple(ws, r, 4, "", False)
+            safe_write_value_only(ws, r, 2, "")
+            safe_write_value_only(ws, r, 4, "")
             ws.row_dimensions[r].hidden = True
 
 # 2. 파일 업로드
@@ -322,21 +347,26 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("처리 중..."):
+            with st.spinner("행 복제 및 양식 최적화 중..."):
                 
                 new_files = []
                 new_download_data = {}
                 
                 try: 
                     df_master = pd.read_excel(master_data_file, sheet_name=0)
+                    df_master.columns = [str(c).replace(" ", "").upper() for c in df_master.columns]
+                    col_code = 'CODE' if 'CODE' in df_master.columns else df_master.columns[0]
+                    col_kor = 'K' if 'K' in df_master.columns else (df_master.columns[1] if len(df_master.columns)>1 else None)
+                    
                     code_map = {}
-                    for idx, row in df_master.iterrows():
-                        if pd.notna(row.iloc[0]):
-                            code_key = str(row.iloc[0]).replace(" ", "").upper().strip()
-                            desc_val = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-                            code_map[code_key] = desc_val
-                except: 
-                    df_master = pd.DataFrame()
+                    if col_kor:
+                        for idx, row in df_master.iterrows():
+                            if pd.notna(row[col_code]):
+                                k = str(row[col_code]).replace(" ", "").upper().strip()
+                                v = str(row[col_kor]).strip() if pd.notna(row[col_kor]) else ""
+                                code_map[k] = v
+                except Exception as e:
+                    st.error(f"중앙 데이터 오류: {e}")
                     code_map = {}
 
                 for uploaded_file in uploaded_files:
@@ -354,26 +384,30 @@ with col_center:
                             data_ws = dest_wb.create_sheet(target_sheet)
                             for r in dataframe_to_rows(df_master, index=False, header=True): data_ws.append(r)
 
+                            # 수식 청소
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
                                     if cell.data_type == 'f' and "ingredients" in str(cell.value):
                                         cell.value = ""
 
-                            safe_write_simple(dest_ws, 7, 2, product_name_input, True)
-                            safe_write_simple(dest_ws, 10, 2, product_name_input, True)
+                            # 기본 데이터
+                            safe_write_value_only(dest_ws, 7, 2, product_name_input)
+                            safe_write_value_only(dest_ws, 10, 2, product_name_input)
                             
                             if parsed_data["hazard_cls"]:
                                 b20_text = "\n".join(parsed_data["hazard_cls"])
-                                safe_write_simple(dest_ws, 20, 2, b20_text, False)
+                                safe_write_value_only(dest_ws, 20, 2, b20_text)
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
                             if parsed_data["signal_word"]:
-                                safe_write_simple(dest_ws, 24, 2, parsed_data["signal_word"], True)
+                                safe_write_value_only(dest_ws, 24, 2, parsed_data["signal_word"])
+                                dest_ws['B24'].alignment = Alignment(horizontal='center', vertical='center')
 
-                            # [핵심] Offset 보정 쓰기
-                            write_ghs_data_final(dest_ws, parsed_data, code_map)
+                            # [핵심] 행 복제 방식으로 데이터 입력
+                            write_ghs_data_clone_row(dest_ws, parsed_data, code_map)
 
+                            # 이미지
                             target_anchor_row = 22
                             if hasattr(dest_ws, '_images'):
                                 preserved_imgs = []
@@ -449,7 +483,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 행 밀림 문제 및 데이터 매핑 완벽 해결.")
+                    st.success("완료! 행 복제 및 서식 유지가 완벽하게 처리되었습니다.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
