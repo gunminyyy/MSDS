@@ -4,15 +4,18 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.cell.cell import MergedCell, Cell
+from openpyxl.drawing.image import Image as XLImage # 이미지 삽입용 추가
 from PIL import Image as PILImage
 import io
 import re
 import gc
+import os   # [복구] 필수 모듈
+import numpy as np # [복구] 필수 모듈
 import fitz  # PyMuPDF
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (최종 - 디자인 유지 & 스마트 입력)")
+st.title("MSDS 양식 변환기 (최종 - 병합 유지 & 스마트 입력)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -154,9 +157,7 @@ def parse_pdf_ghs_logic(doc):
 def safe_write_smart(ws, row, col, value):
     cell = ws.cell(row=row, column=col)
     
-    # 1. 병합된 셀(MergedCell)인지 확인
     if isinstance(cell, MergedCell):
-        # 어느 병합 범위에 속하는지 찾기
         target_range = None
         for rng in ws.merged_cells.ranges:
             if cell.coordinate in rng:
@@ -164,34 +165,26 @@ def safe_write_smart(ws, row, col, value):
                 break
         
         if target_range:
-            # 병합 범위 정보 분석
             min_col, min_row, max_col, max_row = target_range.bounds
             
-            # [CASE A] 세로 병합 (여러 줄 차지) -> 리스트 입력을 위해 해제 필요
+            # 세로 병합 -> 해제
             if max_row > min_row:
                 ws.unmerge_cells(str(target_range))
-                # 해제 후 해당 셀 다시 가져오기 (이제 Cell 객체임)
                 cell = ws.cell(row=row, column=col)
                 cell.value = value
-                
-            # [CASE B] 가로 병합 (한 줄, 여러 칸) -> 디자인 유지
+            # 가로 병합 -> 주인 칸에 입력
             else:
-                # 병합을 풀지 않고, '주인 칸(Top-Left)'에 값을 넣음
                 top_left_cell = ws.cell(row=min_row, column=min_col)
                 top_left_cell.value = value
     else:
-        # 2. 일반 셀이면 그냥 입력
         cell.value = value
 
 # --------------------------------------------------------------------------
-# [함수] 동적 쓰기 (smart write 적용)
+# [함수] 동적 쓰기
 # --------------------------------------------------------------------------
 def write_section_dynamic(ws, start_keyword, next_keyword, codes, code_map):
-    # 1. 시작 행 찾기
     start_row = -1
     for row in range(1, 300):
-        # 병합된 셀일 경우 값을 읽기 어려우므로 top-left 값 확인 필요할 수도 있음
-        # 하지만 키워드 찾기는 대략적인 위치 파악이므로 문자열 변환으로 시도
         val1 = str(ws.cell(row=row, column=1).value)
         val2 = str(ws.cell(row=row, column=2).value)
         if (start_keyword in val1) or (start_keyword in val2):
@@ -199,7 +192,6 @@ def write_section_dynamic(ws, start_keyword, next_keyword, codes, code_map):
     
     if start_row == -1: return 
 
-    # 2. 다음 섹션 행 찾기
     next_row = -1
     for row in range(start_row + 1, 300):
         val1 = str(ws.cell(row=row, column=1).value)
@@ -218,19 +210,16 @@ def write_section_dynamic(ws, start_keyword, next_keyword, codes, code_map):
     
     required_rows = len(unique_codes)
 
-    # 3. 행 삽입
     if required_rows > available_rows:
         rows_to_add = required_rows - available_rows
         ws.insert_rows(next_row, amount=rows_to_add)
     
-    # 4. 데이터 입력
     current_r = start_row + 1
     
     for code in unique_codes:
         ws.row_dimensions[current_r].height = 19
         ws.row_dimensions[current_r].hidden = False
         
-        # 스마트 쓰기 적용 (디자인 유지)
         safe_write_smart(ws, current_r, 2, code) # B열
         
         desc = code_map.get(code, "")
@@ -238,7 +227,6 @@ def write_section_dynamic(ws, start_keyword, next_keyword, codes, code_map):
         
         current_r += 1
     
-    # 5. 빈 행 정리
     real_next_row = -1
     for row in range(current_r, 300):
         val1 = str(ws.cell(row=row, column=1).value)
@@ -319,7 +307,7 @@ with col_center:
                             data_ws = dest_wb.create_sheet(target_sheet)
                             for r in dataframe_to_rows(df_master, index=False, header=True): data_ws.append(r)
 
-                            # 수식 청소 (병합 셀 건너뛰기)
+                            # 수식 청소
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
@@ -424,7 +412,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 병합 셀은 유지하고, 데이터 입력 오류는 완벽 해결했습니다.")
+                    st.success("완료! 병합 셀 충돌 없이 완벽하게 변환되었습니다.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
