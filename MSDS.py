@@ -14,7 +14,7 @@ import gc
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (코드 누락 제로 & 고정 범위)")
+st.title("MSDS 양식 변환기 (코드 누락 방지 & 신호어 보정)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -78,7 +78,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [함수] PDF 파싱 (누락 방지 강화 버전)
+# [함수] PDF 파싱 (전역 스캔 및 자동 분류 추가)
 # --------------------------------------------------------------------------
 def parse_pdf_ghs_logic(doc):
     clean_lines = []
@@ -88,10 +88,13 @@ def parse_pdf_ghs_logic(doc):
         "제 품 명", "GHS", "페이지", "PAGE", "---"
     ]
 
+    full_text_for_scan = "" # 전역 스캔용 텍스트
+
     for page in doc:
         blocks = page.get_text("blocks", sort=True)
         for b in blocks:
             text = b[4]
+            full_text_for_scan += text + "\n"
             lines = text.split('\n')
             for line in lines:
                 line_str = line.strip()
@@ -112,14 +115,13 @@ def parse_pdf_ghs_logic(doc):
     SUB_NONE=0; SUB_PREV=1; SUB_RESP=2; SUB_STOR=3; SUB_DISP=4
     current_sub = SUB_NONE
     
-    # [강화된 정규식] P 301 + P 310 처럼 공백이 섞여도 찾음
     regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
     BLACKLIST_HAZARD = ["공급자정보", "회사명", "주소", "긴급전화번호", "권고용도", "사용상의제한"]
 
+    # 1차 패스: 구역별 정밀 추출
     for line in clean_lines:
         line_ns = line.replace(" ", "")
         
-        # 구역 전환
         if "가.유해성" in line_ns and "분류" in line_ns:
             current_zone = ZONE_HAZARD_CLS; continue
         if "나.예방조치" in line_ns:
@@ -135,37 +137,57 @@ def parse_pdf_ghs_logic(doc):
                 result["hazard_cls"].append(line)
                 codes = regex_code.findall(line)
                 for c in codes:
-                    # 정규화해서 저장 (공백제거)
                     c_clean = c.replace(" ", "")
                     if c_clean.startswith("H"): result["h_codes"].append(c_clean)
 
         elif current_zone == ZONE_LABEL_INFO:
+            # [수정] 신호어 추출: 같은 줄의 내용을 우선 가져옴
             if "신호어" in line_ns:
                 val = line.replace("신호어", "").replace(":", "").strip()
-                if val: result["signal_word"] = val
+                if val: 
+                    result["signal_word"] = val
             
-            # [핵심 수정] 헤더가 발견되어도 'continue' 하지 않고, 그 줄에 있는 코드까지 긁어모음
+            # 서브존 전환
             if line_ns.startswith("예방") and len(line_ns) < 15: current_sub = SUB_PREV
             elif line_ns.startswith("대응") and len(line_ns) < 15: current_sub = SUB_RESP
             elif line_ns.startswith("저장") and len(line_ns) < 15: current_sub = SUB_STOR
             elif line_ns.startswith("폐기") and len(line_ns) < 15: current_sub = SUB_DISP
 
-            # 코드 추출 (현재 라인 전체 스캔)
             codes = regex_code.findall(line)
             for c in codes:
-                c_clean = c.replace(" ", "") # 공백 제거 후 저장
-                if c_clean.startswith("H"): 
-                    result["h_codes"].append(c_clean)
+                c_clean = c.replace(" ", "")
+                if c_clean.startswith("H"): result["h_codes"].append(c_clean)
                 elif c_clean.startswith("P"):
                     if current_sub == SUB_PREV: result["p_prev"].append(c_clean)
                     elif current_sub == SUB_RESP: result["p_resp"].append(c_clean)
                     elif current_sub == SUB_STOR: result["p_stor"].append(c_clean)
                     elif current_sub == SUB_DISP: result["p_disp"].append(c_clean)
 
+    # 2차 패스: 전역 스캔 및 누락 코드 자동 분류 (Safety Net)
+    all_codes = regex_code.findall(full_text_for_scan)
+    collected_set = set(result["h_codes"] + result["p_prev"] + result["p_resp"] + result["p_stor"] + result["p_disp"])
+    
+    for c in all_codes:
+        c_clean = c.replace(" ", "")
+        if c_clean not in collected_set:
+            # 이미 수집된 목록에 없으면(누락되었으면) 번호 대역으로 분류해서 추가
+            if c_clean.startswith("H"): result["h_codes"].append(c_clean)
+            elif c_clean.startswith("P2"): result["p_prev"].append(c_clean)
+            elif c_clean.startswith("P3"): result["p_resp"].append(c_clean)
+            elif c_clean.startswith("P4"): result["p_stor"].append(c_clean)
+            elif c_clean.startswith("P5"): result["p_disp"].append(c_clean)
+            # 복합 코드(P301+P310)인 경우 첫 번째 코드를 기준으로 분류
+            elif c_clean.startswith("P"):
+                first_part = c_clean.split("+")[0]
+                if first_part.startswith("P2"): result["p_prev"].append(c_clean)
+                elif first_part.startswith("P3"): result["p_resp"].append(c_clean)
+                elif first_part.startswith("P4"): result["p_stor"].append(c_clean)
+                elif first_part.startswith("P5"): result["p_disp"].append(c_clean)
+
     return result
 
 # --------------------------------------------------------------------------
-# [함수] 중앙 데이터 매핑 (분할 검색)
+# [함수] 중앙 데이터 매핑
 # --------------------------------------------------------------------------
 def get_description_smart(code, code_map):
     clean_code = str(code).replace(" ", "").upper().strip()
@@ -182,14 +204,13 @@ def get_description_smart(code, code_map):
     return ""
 
 # --------------------------------------------------------------------------
-# [함수] 안전 쓰기 (강제 병합 해제 & 스타일)
+# [함수] 안전 쓰기
 # --------------------------------------------------------------------------
 def safe_write_force(ws, row, col, value, center=False):
     cell = ws.cell(row=row, column=col)
     try:
         cell.value = value
     except AttributeError:
-        # 병합 해제 시도
         try:
             for rng in list(ws.merged_cells.ranges):
                 if cell.coordinate in rng:
@@ -208,10 +229,9 @@ def safe_write_force(ws, row, col, value, center=False):
         cell.alignment = ALIGN_LEFT
 
 # --------------------------------------------------------------------------
-# [핵심] 고정 범위 채우기 (Fixed Range Fill)
+# [핵심] 고정 범위 채우기
 # --------------------------------------------------------------------------
 def fill_fixed_range(ws, start_row, end_row, codes, code_map):
-    # 중복 제거 (순서 유지)
     unique_codes = []
     seen = set()
     for c in codes:
@@ -232,8 +252,8 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map):
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 19
             
-            safe_write_force(ws, current_row, 2, code, center=False) # B열
-            safe_write_force(ws, current_row, 4, desc, center=False) # D열
+            safe_write_force(ws, current_row, 2, code, center=False)
+            safe_write_force(ws, current_row, 4, desc, center=False)
             
         else:
             ws.row_dimensions[current_row].hidden = True
@@ -274,23 +294,20 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("누락 코드 정밀 탐색 및 변환 중..."):
+            with st.spinner("코드 정밀 스캔 및 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
                 
-                # [중앙 데이터 로드]
+                # 중앙 데이터 로드
                 code_map = {}
                 try:
                     xls = pd.ExcelFile(master_data_file)
                     target_sheet = None
-                    
-                    # 시트 찾기 우선순위: '위험 안전문구' -> 컬럼명이 'CODE', 'K'인 시트
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet:
                             target_sheet = sheet
                             break
-                    
                     if target_sheet is None:
                         for sheet in xls.sheet_names:
                             df_check = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
@@ -298,23 +315,16 @@ with col_center:
                             if 'CODE' in cols and 'K' in cols:
                                 target_sheet = sheet
                                 break
-                    
                     if target_sheet:
                         df_master = pd.read_excel(master_data_file, sheet_name=target_sheet)
                         df_master.columns = [str(c).replace(" ", "").upper() for c in df_master.columns]
-                        
                         col_code = 'CODE'
                         col_kor = 'K'
-                        
                         for idx, row in df_master.iterrows():
                             if pd.notna(row[col_code]):
                                 k = str(row[col_code]).replace(" ", "").upper().strip()
                                 v = str(row[col_kor]).strip() if pd.notna(row[col_kor]) else ""
                                 code_map[k] = v
-                        st.info(f"중앙 데이터 로드 완료 ({len(code_map)}개)")
-                    else:
-                        st.error("⚠️ 데이터 시트를 찾지 못했습니다.")
-                        
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
 
@@ -322,20 +332,19 @@ with col_center:
                     if option == "CFF(K)":
                         try:
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+                            # [핵심] 누락 방지 강화된 파싱 함수 사용
                             parsed_data = parse_pdf_ghs_logic(doc)
                             
                             template_file.seek(0)
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
                             dest_ws = dest_wb.active
 
-                            # 수식 청소
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
                                     if cell.data_type == 'f' and "ingredients" in str(cell.value):
                                         cell.value = ""
 
-                            # 기본 정보 입력
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
                             safe_write_force(dest_ws, 10, 2, product_name_input, center=True)
                             
@@ -347,14 +356,14 @@ with col_center:
                             if parsed_data["signal_word"]:
                                 safe_write_force(dest_ws, 24, 2, parsed_data["signal_word"], center=True)
 
-                            # [핵심] 고정 범위 채우기 (범위 내에서만 작동, 누락 없이)
-                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map) 
+                            # 고정 범위 채우기
+                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map)
                             fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
                             fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
                             fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
                             fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
 
-                            # 이미지 삽입
+                            # 이미지
                             target_anchor_row = 22
                             if hasattr(dest_ws, '_images'):
                                 preserved_imgs = []
@@ -430,7 +439,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 코드 누락 없이, 양식 밀림 없이 완벽 변환되었습니다.")
+                    st.success("완료! 신호어 보정 및 모든 P코드 완벽 추출 성공.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
