@@ -5,8 +5,8 @@ from openpyxl.styles import Alignment, Font, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.cell.cell import MergedCell
 from openpyxl.drawing.image import Image as XLImage
-from copy import copy
 from PIL import Image as PILImage
+from copy import copy
 import io
 import re
 import os
@@ -16,15 +16,16 @@ import gc
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (강제 입력 모드)")
+st.title("MSDS 양식 변환기 (시트 자동 탐색 & 고정 범위 채우기)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [스타일 정의] 굴림 8pt, 왼쪽 정렬
+# [스타일] 굴림 8pt, 왼쪽 정렬, 얇은 테두리
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
+BORDER_THIN = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
 
 # --------------------------------------------------------------------------
 # [함수] 이미지 처리
@@ -159,10 +160,10 @@ def parse_pdf_ghs_logic(doc):
     return result
 
 # --------------------------------------------------------------------------
-# [함수] 중앙 데이터 매핑
+# [함수] 중앙 데이터 매핑 (강력한 정규화)
 # --------------------------------------------------------------------------
 def get_description_smart(code, code_map):
-    clean_code = code.replace(" ", "").upper().strip()
+    clean_code = str(code).replace(" ", "").upper().strip()
     if clean_code in code_map:
         return code_map[clean_code]
     if "+" in clean_code:
@@ -176,52 +177,23 @@ def get_description_smart(code, code_map):
     return ""
 
 # --------------------------------------------------------------------------
-# [핵심] 스타일 복사 (행 전체)
-# --------------------------------------------------------------------------
-def copy_row_style_exact(ws, source_row_idx, target_row_idx):
-    ws.row_dimensions[target_row_idx].height = ws.row_dimensions[source_row_idx].height
-    for col in range(1, 15): 
-        source_cell = ws.cell(row=source_row_idx, column=col)
-        target_cell = ws.cell(row=target_row_idx, column=col)
-        
-        if source_cell.has_style:
-            try:
-                target_cell._style = copy(source_cell._style)
-            except:
-                try: target_cell.font = copy(source_cell.font)
-                except: pass
-                try: target_cell.border = copy(source_cell.border)
-                except: pass
-                try: target_cell.fill = copy(source_cell.fill)
-                except: pass
-                try: target_cell.alignment = copy(source_cell.alignment)
-                except: pass
-
-# --------------------------------------------------------------------------
-# [핵심] 초강력 강제 쓰기 (Try-Force)
+# [함수] 안전 쓰기 (강제 병합 해제 & 스타일)
 # --------------------------------------------------------------------------
 def safe_write_force(ws, row, col, value, center=False):
-    """
-    일단 써보고, MergedCell 오류나면 병합을 찾아서 깨고 다시 씀.
-    """
     cell = ws.cell(row=row, column=col)
-    
     try:
         cell.value = value
-    except AttributeError: # 'MergedCell' object attribute 'value' is read-only
-        # 병합된 셀임. 병합 해제 시도.
+    except AttributeError:
+        # 병합 해제 시도
         try:
-            for rng in list(ws.merged_cells.ranges): # 리스트 복사해서 순회
+            for rng in list(ws.merged_cells.ranges):
                 if cell.coordinate in rng:
                     ws.unmerge_cells(str(rng))
-                    # 병합 해제 후 셀 객체 다시 가져와야 함 (중요)
-                    cell = ws.cell(row=row, column=col) 
+                    cell = ws.cell(row=row, column=col)
                     break
             cell.value = value
-        except:
-            pass # 그래도 안되면 포기 (프로그램 중단 방지)
+        except: pass
 
-    # 스타일 적용
     if cell.font.name != '굴림':
         cell.font = FONT_STYLE
     
@@ -231,92 +203,39 @@ def safe_write_force(ws, row, col, value, center=False):
         cell.alignment = ALIGN_LEFT
 
 # --------------------------------------------------------------------------
-# [함수] 스마트 행 관리 (복제 & 채우기)
+# [핵심] 고정 범위 채우기 (Fixed Range Fill)
 # --------------------------------------------------------------------------
-def write_ghs_data_clone_logic(ws, parsed_data, code_map):
+def fill_fixed_range(ws, start_row, end_row, codes, code_map):
+    unique_codes = []
+    for c in codes:
+        clean = c.replace(" ", "").upper().strip()
+        if clean not in unique_codes: unique_codes.append(clean)
     
-    anchors = {"H": -1, "PREV": -1, "RESP": -1, "STOR": -1, "DISP": -1}
-    for r in range(1, 150):
-        val = str(ws.cell(row=r, column=2).value).replace(" ", "")
-        if "유해·위험문구" in val: anchors["H"] = r
-        elif val == "예방": anchors["PREV"] = r
-        elif val == "대응": anchors["RESP"] = r
-        elif val == "저장": anchors["STOR"] = r
-        elif val == "폐기": anchors["DISP"] = r
+    limit = end_row - start_row + 1
     
-    if anchors["H"] == -1: anchors["H"] = 24
-    if anchors["PREV"] == -1: anchors["PREV"] = 31
-    if anchors["RESP"] == -1: anchors["RESP"] = 41
-    if anchors["STOR"] == -1: anchors["STOR"] = 49
-    if anchors["DISP"] == -1: anchors["DISP"] = 52
-
-    offset = 0 
-    
-    sections = [
-        ("H", parsed_data["h_codes"], "PREV"),
-        ("PREV", parsed_data["p_prev"], "RESP"),
-        ("RESP", parsed_data["p_resp"], "STOR"),
-        ("STOR", parsed_data["p_stor"], "DISP"),
-        ("DISP", parsed_data["p_disp"], "END")
-    ]
-    
-    for section_name, codes, next_section_name in sections:
+    for i in range(limit):
+        current_row = start_row + i
         
-        start_row = anchors[section_name] + offset + 1
-        
-        if next_section_name == "END":
-            next_header_row = start_row + 1
-        else:
-            next_header_row = anchors[next_section_name] + offset
-            
-        capacity = next_header_row - start_row
-        
-        unique_codes = []
-        for c in codes:
-            clean = c.replace(" ", "").upper().strip()
-            if clean not in unique_codes: unique_codes.append(clean)
-        
-        needed = len(unique_codes)
-        
-        # 행 부족 시 -> "행 삽입" 후 "첫 줄 서식 복사"
-        if needed > capacity:
-            rows_to_add = needed - capacity
-            insert_pos = next_header_row 
-            
-            ws.insert_rows(insert_pos, amount=rows_to_add)
-            
-            template_row = start_row 
-            
-            for r_idx in range(rows_to_add):
-                target_r = insert_pos + r_idx
-                copy_row_style_exact(ws, template_row, target_r)
-            
-            offset += rows_to_add
-            capacity += rows_to_add
-        
-        curr = start_row
-        for i, code in enumerate(unique_codes):
-            ws.row_dimensions[curr].hidden = False
-            
-            safe_write_force(ws, curr, 2, code, center=False) # B열 (요청: 왼쪽정렬)
-            
+        if i < len(unique_codes):
+            code = unique_codes[i]
             desc = get_description_smart(code, code_map)
-            safe_write_force(ws, curr, 4, desc, center=False) # D열
             
-            curr += 1
+            ws.row_dimensions[current_row].hidden = False
+            ws.row_dimensions[current_row].height = 19
             
-        # 빈 공간 처리
-        limit_row = start_row + capacity
-        for r in range(curr, limit_row):
-            safe_write_force(ws, r, 2, "")
-            safe_write_force(ws, r, 4, "")
-            ws.row_dimensions[r].hidden = True
+            safe_write_force(ws, current_row, 2, code, center=False) # B열
+            safe_write_force(ws, current_row, 4, desc, center=False) # D열
+            
+        else:
+            ws.row_dimensions[current_row].hidden = True
+            safe_write_force(ws, current_row, 2, "") 
+            safe_write_force(ws, current_row, 4, "")
 
 # 2. 파일 업로드
 with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        master_data_file = st.file_uploader("1. 중앙 데이터 (master_data.xlsx)", type="xlsx")
+        master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
         loaded_refs, folder_exists = get_reference_images()
         if folder_exists and loaded_refs:
             st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
@@ -346,27 +265,52 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("양식 복제 및 매핑 중..."):
+            with st.spinner("중앙 데이터 정밀 스캔 및 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
                 
-                try: 
-                    df_master = pd.read_excel(master_data_file, sheet_name=0)
-                    df_master.columns = [str(c).replace(" ", "").upper() for c in df_master.columns]
-                    col_code = 'CODE' if 'CODE' in df_master.columns else df_master.columns[0]
-                    col_kor = 'K' if 'K' in df_master.columns else (df_master.columns[1] if len(df_master.columns)>1 else None)
+                # [핵심] 중앙 데이터 로드 (시트 찾기 로직)
+                code_map = {}
+                try:
+                    # 1. 엑셀 파일 로드 (모든 시트)
+                    xls = pd.ExcelFile(master_data_file)
+                    target_sheet = None
                     
-                    code_map = {}
-                    if col_kor:
+                    # 2. '위험 안전문구' 시트 우선 찾기
+                    for sheet in xls.sheet_names:
+                        if "위험" in sheet and "안전" in sheet:
+                            target_sheet = sheet
+                            break
+                    
+                    # 3. 없으면 'CODE'와 'K' 컬럼이 있는 시트 찾기
+                    if target_sheet is None:
+                        for sheet in xls.sheet_names:
+                            df_check = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
+                            cols = [str(c).upper() for c in df_check.columns]
+                            if 'CODE' in cols and 'K' in cols:
+                                target_sheet = sheet
+                                break
+                    
+                    # 4. 시트 확정 및 로드
+                    if target_sheet:
+                        df_master = pd.read_excel(master_data_file, sheet_name=target_sheet)
+                        df_master.columns = [str(c).replace(" ", "").upper() for c in df_master.columns]
+                        
+                        col_code = 'CODE'
+                        col_kor = 'K'
+                        
                         for idx, row in df_master.iterrows():
                             if pd.notna(row[col_code]):
                                 k = str(row[col_code]).replace(" ", "").upper().strip()
                                 v = str(row[col_kor]).strip() if pd.notna(row[col_kor]) else ""
                                 code_map[k] = v
+                        st.info(f"'{target_sheet}' 시트에서 {len(code_map)}개 데이터 로드 완료")
+                    else:
+                        st.error("⚠️ '위험 안전문구' 시트 또는 'CODE/K' 컬럼을 찾을 수 없습니다.")
+                        
                 except Exception as e:
-                    st.error(f"중앙 데이터 오류: {e}")
-                    code_map = {}
+                    st.error(f"중앙 데이터 로드 오류: {e}")
 
                 for uploaded_file in uploaded_files:
                     if option == "CFF(K)":
@@ -378,20 +322,14 @@ with col_center:
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
                             dest_ws = dest_wb.active
 
-                            target_sheet = '위험 안전문구'
-                            if target_sheet in dest_wb.sheetnames: del dest_wb[target_sheet]
-                            data_ws = dest_wb.create_sheet(target_sheet)
-                            for r in dataframe_to_rows(df_master, index=False, header=True): data_ws.append(r)
-
                             # 수식 청소
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
                                     if cell.data_type == 'f' and "ingredients" in str(cell.value):
-                                        try: cell.value = ""
-                                        except: pass
+                                        cell.value = ""
 
-                            # 기본 데이터
+                            # 기본 정보 입력
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
                             safe_write_force(dest_ws, 10, 2, product_name_input, center=True)
                             
@@ -403,10 +341,14 @@ with col_center:
                             if parsed_data["signal_word"]:
                                 safe_write_force(dest_ws, 24, 2, parsed_data["signal_word"], center=True)
 
-                            # [핵심] 행 복제 방식으로 데이터 입력
-                            write_ghs_data_clone_logic(dest_ws, parsed_data, code_map)
+                            # [핵심] 고정 범위 채우기 (사용자 지정 범위)
+                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map) # H코드
+                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)  # 예방
+                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)  # 대응
+                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)  # 저장
+                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)  # 폐기
 
-                            # 이미지
+                            # 이미지 삽입
                             target_anchor_row = 22
                             if hasattr(dest_ws, '_images'):
                                 preserved_imgs = []
@@ -482,7 +424,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 병합 오류 강제 해결 및 스타일 복제 성공.")
+                    st.success("완료! 중앙 데이터 시트 자동 탐색 및 고정 범위 채우기 성공.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
