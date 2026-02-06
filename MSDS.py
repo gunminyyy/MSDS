@@ -14,7 +14,7 @@ import gc
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (H코드 엄격 모드 & P코드 광역 모드)")
+st.title("MSDS 양식 변환기 (H코드 복구 & 줄간격 최적화)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -78,9 +78,9 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [함수] PDF 파싱 (하이브리드 방식)
+# [함수] PDF 파싱 (범위 제한 스캔 + 공백 제거)
 # --------------------------------------------------------------------------
-def parse_pdf_hybrid(doc):
+def parse_pdf_smart_range(doc):
     full_text = ""
     clean_lines = []
     
@@ -90,46 +90,42 @@ def parse_pdf_hybrid(doc):
         for b in blocks:
             text = b[4]
             full_text += text + "\n"
-            clean_lines.extend(text.split('\n'))
+            lines = text.split('\n')
+            for line in lines:
+                # [수정] 줄바꿈 문제 해결: 양옆 공백 제거 후 내용 있는 것만 수집
+                line_str = line.strip()
+                if not line_str: continue 
+                
+                # 노이즈 필터링
+                is_noise = False
+                for kw in ["물질안전보건자료", "MSDS", "Material Safety", "PAGE", "Ver.", "발행일"]:
+                    if kw in line_str: is_noise = True; break
+                
+                if not is_noise: clean_lines.append(line_str)
 
     result = {
         "hazard_cls": [], "signal_word": "", 
         "h_codes": [], "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": []
     }
 
-    ZONE_NONE = 0; ZONE_HAZARD = 1; ZONE_LABEL = 2
+    ZONE_NONE = 0; ZONE_HAZARD = 1
     state = ZONE_NONE
     
-    regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
-    BLACKLIST_HAZARD = ["공급자정보", "회사명", "주소", "긴급전화번호", "권고용도", "사용상의제한"]
-
-    # 2. 라인별 정밀 스캔 (H코드는 여기서만 추출!)
+    # 2. 라인별 분석 (유해성 분류 텍스트 추출)
     for i, line in enumerate(clean_lines):
         line_ns = line.replace(" ", "")
         
-        # 구역 전환 (엄격)
         if "가.유해성" in line_ns and "분류" in line_ns:
             state = ZONE_HAZARD; continue
         if "나.예방조치" in line_ns:
-            state = ZONE_LABEL; continue 
-        if "3.구성성분" in line_ns or "다.기타" in line_ns:
-            state = ZONE_NONE; continue
-
-        # [ZONE 1] 유해성 분류 & H코드 (엄격 모드)
+            state = ZONE_NONE; continue 
+            
         if state == ZONE_HAZARD:
-            is_bad = False
-            for bl in BLACKLIST_HAZARD:
-                if bl in line_ns: is_bad = True; break
-            if not is_bad:
-                result["hazard_cls"].append(line)
-                # H코드는 오직 이 구역 안에서만 가져온다.
-                codes = regex_code.findall(line)
-                for c in codes:
-                    c_clean = c.replace(" ", "").upper()
-                    if c_clean.startswith("H"):
-                        result["h_codes"].append(c_clean)
-
-        # [ZONE 2] 라벨 정보 (신호어)
+            if "공급자정보" in line_ns or "회사명" in line_ns: continue
+            # [수정] 빈 줄이 아닌 경우에만 추가 (Double Spacing 방지)
+            if line.strip():
+                result["hazard_cls"].append(line.strip())
+            
         if "신호어" in line_ns:
             val = line.replace("신호어", "").replace(":", "").strip()
             if val in ["위험", "경고"]:
@@ -141,28 +137,33 @@ def parse_pdf_hybrid(doc):
                         if nxt in ["위험", "경고"]:
                             result["signal_word"] = nxt; break
 
-    # 3. P코드 전역 스캔 (P코드만 안전망 가동)
-    all_matches = regex_code.findall(full_text)
+    # 3. [핵심] 코드 스캔 범위 제한 (섹션 3 전까지만!)
+    # "3. 구성성분" 또는 "3.Composition" 같은 단어가 나오기 전까지의 텍스트만 자름
+    limit_index = len(full_text)
+    match_sec3 = re.search(r"3\.\s*(구성성분|Composition)", full_text)
+    if match_sec3:
+        limit_index = match_sec3.start()
     
-    # 이미 수집된 P코드 목록 (중복 방지)
-    collected_p = set(result["p_prev"] + result["p_resp"] + result["p_stor"] + result["p_disp"])
+    target_text = full_text[:limit_index] # 2번 섹션까지만 포함된 텍스트
     
-    # P321 강제 추가 (정규식이 놓칠 경우 대비)
-    if "P321" in full_text and "P321" not in collected_p:
+    # 4. 코드 추출 및 자동 분류
+    regex = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+    all_matches = regex.findall(target_text)
+    
+    seen = set()
+    
+    # P321 강제 보정 (타겟 텍스트 내에 있다면)
+    if "P321" in target_text and "P321" not in all_matches:
         all_matches.append("P321")
 
     for code_raw in all_matches:
         code = code_raw.replace(" ", "").upper()
+        if code in seen: continue
+        seen.add(code)
         
-        # [핵심 변경사항] 전역 스캔에서는 H코드는 절대 수집하지 않음 (3번 섹션 혼입 방지)
         if code.startswith("H"):
-            continue 
-            
-        if code in collected_p: continue
-        collected_p.add(code)
-        
-        # P코드 자동 분류
-        if code.startswith("P"):
+            result["h_codes"].append(code)
+        elif code.startswith("P"):
             prefix = code.split("+")[0]
             if prefix.startswith("P2"): result["p_prev"].append(code)
             elif prefix.startswith("P3"): result["p_resp"].append(code)
@@ -302,7 +303,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("하이브리드 추출 및 정밀 변환 중..."):
+            with st.spinner("H코드 정밀 복구 및 줄간격 조정 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -336,8 +337,7 @@ with col_center:
                     if option == "CFF(K)":
                         try:
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                            # [핵심] 하이브리드 파싱 함수 사용
-                            parsed_data = parse_pdf_hybrid(doc)
+                            parsed_data = parse_pdf_smart_range(doc)
                             
                             template_file.seek(0)
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
@@ -352,9 +352,11 @@ with col_center:
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
                             safe_write_force(dest_ws, 10, 2, product_name_input, center=True)
                             
+                            # [핵심] 유해성 분류 (줄바꿈 최적화)
                             if parsed_data["hazard_cls"]:
-                                b20_text = "\n".join(parsed_data["hazard_cls"])
-                                safe_write_force(dest_ws, 20, 2, b20_text, center=False)
+                                # 빈 줄 없는 리스트로 재생성 후 합치기
+                                clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
+                                safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
                             signal_final = parsed_data["signal_word"] if parsed_data["signal_word"] else ""
@@ -441,7 +443,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! H코드 오탐지 수정 및 모든 요청사항 반영됨.")
+                    st.success("완료! H코드 복구 및 줄간격 수정 완료.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
