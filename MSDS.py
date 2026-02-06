@@ -12,10 +12,11 @@ import re
 import os
 import fitz  # PyMuPDF
 import numpy as np
+import gc  # [복구] 필수 모듈 추가
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (행 양식 복제 모드)")
+st.title("MSDS 양식 변환기 (최종 - 행 복제 & 스타일 완벽 이식)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
