@@ -112,11 +112,12 @@ with col_center:
                 new_files = []
                 new_download_data = {}
                 
-                # 중앙 데이터 읽기
+                # 중앙 데이터 읽기 (문자열 변환 강화)
                 try: 
                     df_master = pd.read_excel(master_data_file, sheet_name=0)
                     code_map = {}
                     for idx, row in df_master.iterrows():
+                        # [수정] 공백 제거 및 문자열 강제 변환
                         code_val = str(row.iloc[0]).strip()
                         desc_val = str(row.iloc[1]).strip()
                         code_map[code_val] = desc_val
@@ -157,42 +158,48 @@ with col_center:
                             dest_ws['B10'] = product_name_input
                             
                             # ---------------------------------------------------
-                            # [PDF 텍스트 분석]
+                            # [PDF 텍스트 분석 및 추출]
                             # ---------------------------------------------------
                             full_text = ""
+                            # 줄바꿈 유지를 위해 "text" 옵션 사용
                             for page in doc:
-                                full_text += page.get_text()
+                                full_text += page.get_text("text") + "\n"
 
-                            # 줄바꿈 제거 (검색 용이성)
-                            clean_text = full_text.replace("\n", " ")
-
-                            # [A] 유해성 본문 (B20)
-                            start_match = re.search(r"2\.\s*유해성.*?위험성", clean_text)
-                            end_match = re.search(r"예방조치문구", clean_text)
+                            # [A] 유해성 본문 (B20) - 헤더 제외 및 줄바꿈 유지 수정
+                            # "가. 유해성...분류" 헤더 다음 내용부터 "나. 예방..." 전까지
+                            # 정규식: 헤더(group1) + 내용(group2) + 다음헤더
+                            pattern_b20 = re.search(r"(가\.\s*유해성.*?분류\s*\n)(.*?)(나\.\s*예방조치)", full_text, re.DOTALL)
                             
                             b20_text = ""
-                            if start_match and end_match:
-                                start_idx = start_match.end()
-                                end_idx = end_match.start()
-                                b20_text = clean_text[start_idx:end_idx].strip()[:1000]
+                            if pattern_b20:
+                                # group(2)가 실제 내용입니다. strip()으로 앞뒤 공백만 제거
+                                raw_content = pattern_b20.group(2).strip()
+                                b20_text = raw_content[:1000] # 길이 제한
                             
                             if b20_text:
                                 dest_ws['B20'] = b20_text
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
-                            # [B] H코드 추출 및 입력 (B25 ~ B30)
+                            # [B] H코드 추출 (B25 ~ B30)
+                            # B20에서 추출한 유해성 본문 내에서 H코드 검색 (정확도 향상)
                             extracted_h_codes = []
-                            # clean_text 전체에서 H코드 찾기
-                            found_h_codes = re.findall(r"H\d{3}", clean_text)
-                            for code in found_h_codes:
-                                if code not in extracted_h_codes: extracted_h_codes.append(code)
+                            if b20_text:
+                                found_h_codes = re.findall(r"H\d{3}", b20_text)
+                                for code in found_h_codes:
+                                    if code not in extracted_h_codes: extracted_h_codes.append(code)
                             
-                            # B25 입력
+                            # B25 입력 및 D열 매칭
                             current_target_row = 25
                             for code in extracted_h_codes:
                                 if current_target_row > 30: break
-                                dest_ws.cell(row=current_target_row, column=2).value = code
-                                dest_ws.cell(row=current_target_row, column=4).value = code_map.get(code, "")
+                                # 코드 입력 (문자열로 변환하여 공백제거)
+                                clean_code = str(code).strip()
+                                dest_ws.cell(row=current_target_row, column=2).value = clean_code
+                                
+                                # 매칭 확인
+                                matched_desc = code_map.get(clean_code, "")
+                                dest_ws.cell(row=current_target_row, column=4).value = matched_desc
+                                
                                 current_target_row += 1
                             
                             # B25~B30 숨김 처리
@@ -203,34 +210,34 @@ with col_center:
                                     dest_ws.row_dimensions[r].hidden = False
 
                             # ---------------------------------------------------
-                            # [신규] P코드 추출 (예방, 대응, 저장, 폐기)
+                            # [신규] P코드 섹션별 정밀 추출 (순서 뒤섞임 방지)
                             # ---------------------------------------------------
                             
-                            # 섹션별 인덱스 찾기 (검색 범위 한정을 위해)
-                            idx_prevention = clean_text.find("예방", end_match.start() if end_match else 0)
-                            idx_response = clean_text.find("대응", idx_prevention)
-                            idx_storage = clean_text.find("저장", idx_response)
-                            idx_disposal = clean_text.find("폐기", idx_storage)
-                            
-                            # 섹션별 텍스트 자르기
-                            txt_prevention = ""
-                            txt_response = ""
-                            txt_storage = ""
-                            txt_disposal = ""
-                            
-                            if idx_prevention != -1 and idx_response != -1:
-                                txt_prevention = clean_text[idx_prevention:idx_response]
-                            if idx_response != -1 and idx_storage != -1:
-                                txt_response = clean_text[idx_response:idx_storage]
-                            if idx_storage != -1 and idx_disposal != -1:
-                                txt_storage = clean_text[idx_storage:idx_disposal]
-                            if idx_disposal != -1:
-                                # 폐기 다음 섹션("3.") 전까지
-                                next_section = re.search(r"3\.\s", clean_text[idx_disposal:])
-                                end_disposal = idx_disposal + next_section.start() if next_section else len(clean_text)
-                                txt_disposal = clean_text[idx_disposal:end_disposal]
+                            # 전체 텍스트에서 "나. 예방조치...항목" 부터 "3. 구성성분" 전까지 추출
+                            section_2_block_match = re.search(r"나\.\s*예방조치.*?항목\s*\n(.*?)(3\.\s*구성성분|다\.\s*기타)", full_text, re.DOTALL)
+                            section_2_text = section_2_block_match.group(1) if section_2_block_match else ""
 
-                            # 공통 함수: P코드 추출 및 셀 입력
+                            # 섹션별 텍스트 나누기 (예방 -> 대응 -> 저장 -> 폐기 순서 보장)
+                            # 정규식으로 각 키워드의 위치(인덱스)를 찾습니다.
+                            # 주의: PDF 줄바꿈으로 인해 "예 방", "대 응" 등으로 띄어쓰기가 있을 수 있음
+                            
+                            # 1. 예방 ~ 대응 사이
+                            match_prev = re.search(r"(예\s*방)(.*?)(대\s*응)", section_2_text, re.DOTALL)
+                            txt_prevention = match_prev.group(2) if match_prev else ""
+                            
+                            # 2. 대응 ~ 저장 사이
+                            match_resp = re.search(r"(대\s*응)(.*?)(저\s*장)", section_2_text, re.DOTALL)
+                            txt_response = match_resp.group(2) if match_resp else ""
+                            
+                            # 3. 저장 ~ 폐기 사이
+                            match_stor = re.search(r"(저\s*장)(.*?)(폐\s*기)", section_2_text, re.DOTALL)
+                            txt_storage = match_stor.group(2) if match_stor else ""
+                            
+                            # 4. 폐기 ~ 끝까지
+                            match_disp = re.search(r"(폐\s*기)(.*)", section_2_text, re.DOTALL)
+                            txt_disposal = match_disp.group(2) if match_disp else ""
+
+                            # 공통 함수: P코드 추출 및 셀 입력 (D열 매칭 포함)
                             def fill_p_codes(target_text, start_row, end_row):
                                 # P코드 정규식 (P300+P310 형태 포함)
                                 p_codes = re.findall(r"P\d{3}(?:\+P\d{3})*", target_text)
@@ -238,32 +245,39 @@ with col_center:
                                 for p in p_codes:
                                     if p not in unique_p: unique_p.append(p)
                                 
-                                # 숨김 취소 (내용 넣기 전 초기화)
+                                # 우선 해당 범위 숨김 취소
                                 for r in range(start_row, end_row + 1):
                                     dest_ws.row_dimensions[r].hidden = False
                                 
                                 curr = start_row
                                 for p_code in unique_p:
                                     if curr > end_row: break
-                                    dest_ws.cell(row=curr, column=2).value = p_code
-                                    dest_ws.cell(row=curr, column=4).value = code_map.get(p_code, "")
+                                    
+                                    clean_p = str(p_code).strip()
+                                    dest_ws.cell(row=curr, column=2).value = clean_p
+                                    
+                                    # D열 매칭 (중앙 데이터)
+                                    # P코드는 +로 연결된 경우가 있으므로, 없으면 각각 찾아서 합치거나 그대로 둠
+                                    if clean_p in code_map:
+                                        dest_ws.cell(row=curr, column=4).value = code_map[clean_p]
+                                    else:
+                                        # 매칭 실패 시 (복합 코드 등) -> 일단 빈칸 (또는 수동 확인 필요)
+                                        # 복합코드(P300+P310)인 경우 중앙 데이터에 해당 키가 없으면 안 나옵니다.
+                                        # 중앙 데이터에 "P300+P310" 키가 있거나, 아니면 코드를 쪼개서 찾아야 합니다.
+                                        # 여기서는 일단 1:1 매칭 시도
+                                        dest_ws.cell(row=curr, column=4).value = code_map.get(clean_p, "")
+
                                     curr += 1
                                 
-                                # 내용 없는 행 숨기기
+                                # 값이 안 들어간 나머지 행 숨기기
                                 for r in range(start_row, end_row + 1):
                                     if not dest_ws.cell(row=r, column=2).value:
                                         dest_ws.row_dimensions[r].hidden = True
 
-                            # 1. 예방 (B32 ~ B41)
+                            # 각 섹션별 적용
                             fill_p_codes(txt_prevention, 32, 41)
-                            
-                            # 2. 대응 (B42 ~ B49)
                             fill_p_codes(txt_response, 42, 49)
-                            
-                            # 3. 저장 (B50 ~ B52) - 기존 숨김 행 포함
                             fill_p_codes(txt_storage, 50, 52)
-                            
-                            # 4. 폐기 (B53)
                             fill_p_codes(txt_disposal, 53, 53)
 
                             # ---------------------------------------------------
@@ -297,7 +311,6 @@ with col_center:
                                             collected_pil_images.append((sort_key, pil_img))
                                     except: continue
                             
-                            # 중복 제거 및 정렬
                             unique_images = {}
                             for key, img in collected_pil_images:
                                 if key not in unique_images:
