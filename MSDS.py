@@ -4,7 +4,6 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.cell.cell import MergedCell
-from openpyxl.drawing.image import Image as XLImage
 from copy import copy
 from PIL import Image as PILImage
 import io
@@ -12,11 +11,11 @@ import re
 import os
 import fitz  # PyMuPDF
 import numpy as np
-import gc  # [복구] 필수 모듈 추가
+import gc
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (최종 - 행 복제 & 스타일 완벽 이식)")
+st.title("MSDS 양식 변환기 (위치 자동 추적 & 스타일 복제)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -26,485 +25,327 @@ FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [함수] 이미지 처리
+# [함수] 중앙 데이터 로드 (정규화: 공백제거, 대문자)
 # --------------------------------------------------------------------------
-def normalize_image(pil_img):
+def load_master_data(file):
     try:
-        if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
-            background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
-            if pil_img.mode == 'P': pil_img = pil_img.convert('RGBA')
-            background.paste(pil_img, mask=pil_img.split()[3])
-            pil_img = background
-        else:
-            pil_img = pil_img.convert('RGB')
-        return pil_img.resize((32, 32)).convert('L')
-    except:
-        return pil_img.resize((32, 32)).convert('L')
-
-def get_reference_images():
-    img_folder = "reference_imgs"
-    if not os.path.exists(img_folder): return {}, False
-    try:
-        ref_images = {}
-        file_list = sorted(os.listdir(img_folder)) 
-        for fname in file_list:
-            if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.tif', '.tiff')):
-                full_path = os.path.join(img_folder, fname)
-                try:
-                    pil_img = PILImage.open(full_path)
-                    ref_images[fname] = pil_img
-                except: continue
-        return ref_images, True
-    except: return {}, False
-
-def find_best_match_name(src_img, ref_images):
-    best_score = float('inf')
-    best_name = None
-    try:
-        src_norm = normalize_image(src_img)
-        src_arr = np.array(src_norm, dtype='int16')
-        for name, ref_img in ref_images.items():
-            ref_norm = normalize_image(ref_img)
-            ref_arr = np.array(ref_norm, dtype='int16')
-            diff = np.mean(np.abs(src_arr - ref_arr))
-            if diff < best_score:
-                best_score = diff
-                best_name = name
-        if best_score < 65: return best_name
-        else: return None
-    except: return None
-
-def extract_number(filename):
-    nums = re.findall(r'\d+', filename)
-    return int(nums[0]) if nums else 999
-
-# --------------------------------------------------------------------------
-# [함수] PDF 파싱
-# --------------------------------------------------------------------------
-def parse_pdf_ghs_logic(doc):
-    clean_lines = []
-    NOISE_KEYWORDS = [
-        "물질안전보건자료", "MSDS", "Material Safety Data Sheet",
-        "Corea flavors", "주식회사 고려", "HAIR CARE", "Ver.", "발행일", "개정일",
-        "제 품 명", "GHS", "페이지", "PAGE", "---"
-    ]
-
-    for page in doc:
-        blocks = page.get_text("blocks", sort=True)
-        for b in blocks:
-            text = b[4]
-            lines = text.split('\n')
-            for line in lines:
-                line_str = line.strip()
-                if not line_str: continue
-                is_noise = False
-                for kw in NOISE_KEYWORDS:
-                    if kw.replace(" ", "") in line_str.replace(" ", ""):
-                        is_noise = True; break
-                if not is_noise: clean_lines.append(line_str)
-
-    result = {
-        "hazard_cls": [], "signal_word": "", "h_codes": [],
-        "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": []
-    }
-
-    ZONE_NONE = 0; ZONE_HAZARD_CLS = 1; ZONE_LABEL_INFO = 2
-    current_zone = ZONE_NONE
-    SUB_NONE=0; SUB_PREV=1; SUB_RESP=2; SUB_STOR=3; SUB_DISP=4
-    current_sub = SUB_NONE
-    
-    regex_code = re.compile(r"([HP]\d{3}(?:\s*\+\s*[HP]\d{3})*)")
-    BLACKLIST_HAZARD = ["공급자정보", "회사명", "주소", "긴급전화번호", "권고용도", "사용상의제한"]
-
-    for line in clean_lines:
-        line_ns = line.replace(" ", "")
+        df = pd.read_excel(file, sheet_name=0)
+        # 컬럼명 정규화
+        df.columns = [str(c).replace(" ", "").upper() for c in df.columns]
         
-        if "가.유해성" in line_ns and "분류" in line_ns:
-            current_zone = ZONE_HAZARD_CLS; continue
-        if "나.예방조치" in line_ns:
-            current_zone = ZONE_LABEL_INFO; current_sub = SUB_NONE; continue
-        if "3.구성성분" in line_ns or "다.기타" in line_ns:
-            current_zone = ZONE_NONE; break
+        # CODE, K 컬럼 찾기
+        col_code = 'CODE' if 'CODE' in df.columns else df.columns[0]
+        col_kor = 'K' if 'K' in df.columns else (df.columns[1] if len(df.columns)>1 else None)
+        
+        mapping = {}
+        if col_kor:
+            for idx, row in df.iterrows():
+                if pd.notna(row[col_code]):
+                    # Key: 공백제거, 대문자
+                    k = str(row[col_code]).replace(" ", "").replace("\n", "").upper().strip()
+                    v = str(row[col_kor]).strip() if pd.notna(row[col_kor]) else ""
+                    mapping[k] = v
+        return mapping
+    except Exception:
+        return {}
 
-        if current_zone == ZONE_HAZARD_CLS:
-            is_bad = False
-            for bl in BLACKLIST_HAZARD:
-                if bl in line_ns: is_bad = True; break
-            if not is_bad:
-                result["hazard_cls"].append(line)
-                codes = regex_code.findall(line)
-                for c in codes:
-                    if c.startswith("H"): result["h_codes"].append(c)
-
-        elif current_zone == ZONE_LABEL_INFO:
-            if "신호어" in line_ns:
-                val = line.replace("신호어", "").replace(":", "").strip()
-                if val: result["signal_word"] = val
-            
-            if line_ns.startswith("예방") and len(line_ns) < 15: current_sub = SUB_PREV
-            elif line_ns.startswith("대응") and len(line_ns) < 15: current_sub = SUB_RESP
-            elif line_ns.startswith("저장") and len(line_ns) < 15: current_sub = SUB_STOR
-            elif line_ns.startswith("폐기") and len(line_ns) < 15: current_sub = SUB_DISP
-
-            codes = regex_code.findall(line)
-            for c in codes:
-                if c.startswith("H"): result["h_codes"].append(c)
-                elif c.startswith("P"):
-                    if current_sub == SUB_PREV: result["p_prev"].append(c)
-                    elif current_sub == SUB_RESP: result["p_resp"].append(c)
-                    elif current_sub == SUB_STOR: result["p_stor"].append(c)
-                    elif current_sub == SUB_DISP: result["p_disp"].append(c)
-
-    return result
-
-# --------------------------------------------------------------------------
-# [함수] 중앙 데이터 매핑 (분할 검색)
-# --------------------------------------------------------------------------
-def get_description_smart(code, code_map):
-    clean_code = code.replace(" ", "").upper().strip()
-    if clean_code in code_map:
-        return code_map[clean_code]
-    if "+" in clean_code:
-        parts = clean_code.split("+")
-        found_texts = []
+def get_desc(code, mapping):
+    # 입력된 코드 정규화
+    clean = str(code).replace(" ", "").replace("\n", "").upper().strip()
+    
+    # 1. 완벽 일치
+    if clean in mapping: return mapping[clean]
+    
+    # 2. 복합 코드 (+ 분리)
+    if "+" in clean:
+        parts = clean.split("+")
+        found = []
         for p in parts:
-            if p in code_map:
-                found_texts.append(code_map[p])
-        if found_texts:
-            return " ".join(found_texts)
+            if p in mapping: found.append(mapping[p])
+        if found: return " ".join(found)
+        
     return ""
 
 # --------------------------------------------------------------------------
-# [핵심] 행 스타일 복사 (이전 행 -> 새 행)
+# [함수] PDF 파싱 (구역 추출)
 # --------------------------------------------------------------------------
-def copy_row_style_exact(ws, source_row_idx, target_row_idx):
-    """
-    Source Row의 높이 및 셀 스타일(폰트, 테두리, 정렬, 배경색 등)을 
-    Target Row로 완벽하게 복제합니다.
-    """
-    # 1. 행 높이 복사
-    ws.row_dimensions[target_row_idx].height = ws.row_dimensions[source_row_idx].height
-    
-    # 2. 셀 스타일 복사 (A~L열 정도까지)
-    for col in range(1, 15): 
-        source_cell = ws.cell(row=source_row_idx, column=col)
-        target_cell = ws.cell(row=target_row_idx, column=col)
+def parse_pdf(doc):
+    full_text = []
+    # 페이지별로 읽되 좌표 순서(sort=True)로 정렬
+    for page in doc:
+        blocks = page.get_text("blocks", sort=True)
+        for b in blocks:
+            full_text.append(b[4]) # 텍스트 내용만
+            
+    # 전체 텍스트를 줄 단위로 분리
+    lines = []
+    for txt in full_text:
+        lines.extend(txt.split('\n'))
         
-        if source_cell.has_style:
-            # _style 속성을 통째로 복사하는 것이 가장 정확함
-            try:
-                target_cell._style = copy(source_cell._style)
-            except:
-                # 실패 시 개별 속성 복사
-                target_cell.font = copy(source_cell.font)
-                target_cell.border = copy(source_cell.border)
-                target_cell.fill = copy(source_cell.fill)
-                target_cell.number_format = copy(source_cell.number_format)
-                target_cell.protection = copy(source_cell.protection)
-                target_cell.alignment = copy(source_cell.alignment)
+    # 노이즈 필터링
+    clean_lines = []
+    for line in lines:
+        l = line.strip()
+        if not l: continue
+        if any(x in l for x in ["물질안전보건자료", "MSDS", "PAGE", "Ver.", "발행일"]): continue
+        clean_lines.append(l)
+
+    # 데이터 추출
+    data = {"h": [], "prev": [], "resp": [], "stor": [], "disp": [], "signal": "", "hazard_cls": []}
+    
+    # 상태 머신
+    ZONE_NONE = 0
+    ZONE_HAZARD = 1 # 유해성 분류
+    ZONE_LABEL = 2  # 라벨 요소
+    state = ZONE_NONE
+    
+    sub_state = None # P코드 서브존
+    
+    regex_code = re.compile(r"([HP]\d{3}(?:\s*\+\s*[HP]\d{3})*)")
+    
+    for line in clean_lines:
+        lns = line.replace(" ", "")
+        
+        # 구역 전환 감지
+        if "가.유해성" in lns and "분류" in lns:
+            state = ZONE_HAZARD; continue
+        if "나.예방조치" in lns:
+            state = ZONE_LABEL; sub_state = None; continue
+        if "3.구성성분" in lns or "다.기타" in lns:
+            state = ZONE_NONE; break
+            
+        if state == ZONE_HAZARD:
+            if "공급자정보" in lns or "회사명" in lns: continue
+            data["hazard_cls"].append(line)
+            # H코드 추출
+            codes = regex_code.findall(line)
+            for c in codes: 
+                if c.startswith("H"): data["h"].append(c)
+                
+        elif state == ZONE_LABEL:
+            if "신호어" in lns:
+                data["signal"] = line.replace("신호어", "").strip()
+            
+            # 서브존 전환 (키워드)
+            if lns.startswith("예방") and len(lns)<10: sub_state = "prev"
+            elif lns.startswith("대응") and len(lns)<10: sub_state = "resp"
+            elif lns.startswith("저장") and len(lns)<10: sub_state = "stor"
+            elif lns.startswith("폐기") and len(lns)<10: sub_state = "disp"
+            
+            # 코드 추출
+            codes = regex_code.findall(line)
+            for c in codes:
+                if c.startswith("H"): data["h"].append(c)
+                elif c.startswith("P") and sub_state:
+                    data[sub_state].append(c)
+                    
+    return data
 
 # --------------------------------------------------------------------------
-# [함수] 안전 쓰기 (서식은 복사된 것 유지, 값만 변경)
+# [핵심] 행 스타일 복사 (서식 유지용)
 # --------------------------------------------------------------------------
-def safe_write_value_styled(ws, row, col, value):
-    cell = ws.cell(row=row, column=col)
-    
-    # 병합 해제 (입력을 위해)
-    if isinstance(cell, MergedCell):
-        for rng in ws.merged_cells.ranges:
-            if cell.coordinate in rng:
-                ws.unmerge_cells(str(rng))
-                break
-        cell = ws.cell(row=row, column=col)
-
-    cell.value = value
-    
-    # [중요] 사용자가 요청한 폰트/정렬 강제 적용 (복사된 스타일 위에 덮어쓰기)
-    # 테두리(Border)는 copy_row_style_exact에서 가져온 것을 유지
-    if cell.font.name != '굴림':
-        cell.font = FONT_STYLE
-    
-    cell.alignment = ALIGN_LEFT
+def copy_style(ws, src_row, tgt_row):
+    ws.row_dimensions[tgt_row].height = ws.row_dimensions[src_row].height
+    for col in range(1, 10): # A~I열 복사
+        src = ws.cell(row=src_row, column=col)
+        tgt = ws.cell(row=tgt_row, column=col)
+        if src.has_style:
+            try: tgt._style = copy(src._style)
+            except: pass # 스타일 복사 실패 시 무시
 
 # --------------------------------------------------------------------------
-# [함수] 스마트 행 관리 (복제 & 채우기)
+# [핵심] 순차적 섹션 처리기 (밀림 현상 완벽 대응)
 # --------------------------------------------------------------------------
-def write_ghs_data_clone_logic(ws, parsed_data, code_map):
+def process_section(ws, start_keyword, next_keyword, codes, mapping, search_start_row):
+    """
+    search_start_row 부터 시작해서 start_keyword를 찾고, 
+    그 다음 next_keyword를 찾아서 그 사이 공간에 데이터를 넣음.
+    부족하면 행을 추가하고 스타일을 복사함.
+    처리가 끝난 마지막 행 위치를 반환함 (다음 검색 시작점).
+    """
     
-    # 1. 헤더 위치(앵커) 찾기
-    anchors = {"H": -1, "PREV": -1, "RESP": -1, "STOR": -1, "DISP": -1}
-    for r in range(1, 150):
+    # 1. 시작 헤더 찾기
+    header_row = -1
+    for r in range(search_start_row, ws.max_row + 1):
         val = str(ws.cell(row=r, column=2).value).replace(" ", "")
-        if "유해·위험문구" in val: anchors["H"] = r
-        elif val == "예방": anchors["PREV"] = r
-        elif val == "대응": anchors["RESP"] = r
-        elif val == "저장": anchors["STOR"] = r
-        elif val == "폐기": anchors["DISP"] = r
+        if start_keyword in val:
+            header_row = r
+            break
     
-    if anchors["H"] == -1: anchors["H"] = 24
-    if anchors["PREV"] == -1: anchors["PREV"] = 31
-    if anchors["RESP"] == -1: anchors["RESP"] = 41
-    if anchors["STOR"] == -1: anchors["STOR"] = 49
-    if anchors["DISP"] == -1: anchors["DISP"] = 52
+    if header_row == -1: return search_start_row # 못 찾으면 현 위치 반환
+    
+    # 2. 다음 헤더(끝) 찾기
+    next_header_row = -1
+    if next_keyword == "END":
+        next_header_row = header_row + 2 # 최소 공간
+    else:
+        for r in range(header_row + 1, ws.max_row + 100):
+            val = str(ws.cell(row=r, column=2).value).replace(" ", "")
+            if next_keyword in val:
+                next_header_row = r
+                break
+        if next_header_row == -1: next_header_row = header_row + 5 # fallback
+        
+    # 데이터 들어갈 첫 줄
+    data_row = header_row + 1
+    
+    # 가용 공간 (현재 빈 줄 수)
+    available = next_header_row - data_row
+    
+    # 코드 중복 제거
+    unique_codes = []
+    seen = set()
+    for c in codes:
+        clean = c.replace(" ", "").upper().strip()
+        if clean not in seen:
+            unique_codes.append(clean)
+            seen.add(clean)
+            
+    needed = len(unique_codes)
+    
+    # 3. 공간 부족 시 행 삽입 (스타일 복사 포함)
+    if needed > available:
+        rows_to_add = needed - available
+        insert_pos = next_header_row # 다음 헤더 바로 위에 삽입
+        
+        ws.insert_rows(insert_pos, amount=rows_to_add)
+        
+        # 스타일 복사 (삽입 위치 바로 윗줄 = 섹션의 마지막 줄 서식을 복사)
+        style_src_row = insert_pos - 1
+        for i in range(rows_to_add):
+            tgt_row = insert_pos + i
+            copy_style(ws, style_src_row, tgt_row)
+            
+        # 행 추가로 인해 다음 헤더 위치가 밀려남
+        next_header_row += rows_to_add
+        
+    # 4. 데이터 쓰기
+    curr = data_row
+    for code in unique_codes:
+        # 숨김 해제 및 높이 고정
+        ws.row_dimensions[curr].hidden = False
+        ws.row_dimensions[curr].height = 19
+        
+        # 셀 병합 해제 (안전장치)
+        for col in [2, 4]:
+            cell = ws.cell(row=curr, column=col)
+            if isinstance(cell, MergedCell):
+                # 병합 해제 로직 (간소화)
+                pass 
+        
+        # B열: 코드
+        cell_b = ws.cell(row=curr, column=2)
+        cell_b.value = code
+        cell_b.font = FONT_STYLE
+        cell_b.alignment = ALIGN_LEFT
+        
+        # D열: 내용 (매핑)
+        cell_d = ws.cell(row=curr, column=4)
+        desc = get_desc(code, mapping)
+        cell_d.value = desc
+        cell_d.font = FONT_STYLE
+        cell_d.alignment = ALIGN_LEFT
+        
+        curr += 1
+        
+    # 5. 남은 빈 칸 처리 (수식/내용 지우고 숨김)
+    for r in range(curr, next_header_row):
+        ws.cell(row=r, column=2).value = ""
+        ws.cell(row=r, column=4).value = ""
+        ws.row_dimensions[r].hidden = True
+        
+    # 다음 검색은 현재 섹션 끝(next_header_row) 부터 시작
+    return next_header_row
 
-    # 행이 추가되면 아래쪽 앵커들은 그만큼 밀려납니다.
-    offset = 0 
-    
-    sections = [
-        ("H", parsed_data["h_codes"], "PREV"),
-        ("PREV", parsed_data["p_prev"], "RESP"),
-        ("RESP", parsed_data["p_resp"], "STOR"),
-        ("STOR", parsed_data["p_stor"], "DISP"),
-        ("DISP", parsed_data["p_disp"], "END")
-    ]
-    
-    for section_name, codes, next_section_name in sections:
-        
-        # 현재 섹션 시작 행
-        start_row = anchors[section_name] + offset + 1
-        
-        # 다음 섹션 헤더 위치
-        if next_section_name == "END":
-            next_header_row = start_row + 1
-        else:
-            next_header_row = anchors[next_section_name] + offset
-            
-        capacity = next_header_row - start_row
-        
-        unique_codes = []
-        for c in codes:
-            clean = c.replace(" ", "").upper().strip()
-            if clean not in unique_codes: unique_codes.append(clean)
-        
-        needed = len(unique_codes)
-        
-        # [핵심] 공간 부족 시 -> 행 삽입 후 -> "바로 윗 행" 스타일 복사
-        if needed > capacity:
-            rows_to_add = needed - capacity
-            
-            # 다음 헤더 바로 위(섹션의 맨 끝)에 삽입
-            insert_pos = next_header_row 
-            
-            # 1. 깡통 행 삽입
-            ws.insert_rows(insert_pos, amount=rows_to_add)
-            
-            # 2. 스타일 복사 (Source: 삽입 위치 바로 위의 행 = 섹션의 마지막 빈 행)
-            source_row = insert_pos - 1
-            
-            for r_idx in range(rows_to_add):
-                target_r = insert_pos + r_idx
-                # Source Row의 스타일을 Target Row로 복제
-                copy_row_style_exact(ws, source_row, target_r)
-            
-            # 오프셋 누적
-            offset += rows_to_add
-            capacity += rows_to_add
-        
-        # 데이터 쓰기
-        curr = start_row
-        for i, code in enumerate(unique_codes):
-            ws.row_dimensions[curr].hidden = False
-            
-            # 값 입력 (스타일은 유지하되 값만 넣음)
-            safe_write_value_styled(ws, curr, 2, code) # B열
-            
-            desc = get_description_smart(code, code_map)
-            safe_write_value_styled(ws, curr, 4, desc) # D열
-            
-            curr += 1
-            
-        # 빈 공간 처리 (수식 삭제 & 숨김)
-        limit_row = start_row + capacity
-        for r in range(curr, limit_row):
-            safe_write_value_styled(ws, r, 2, "")
-            safe_write_value_styled(ws, r, 4, "")
-            ws.row_dimensions[r].hidden = True
-
-# 2. 파일 업로드
-with st.expander("📂 필수 파일 업로드", expanded=True):
+# 2. UI 구성
+with st.expander("📂 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        master_data_file = st.file_uploader("1. 중앙 데이터 (master_data.xlsx)", type="xlsx")
-        loaded_refs, folder_exists = get_reference_images()
-        if folder_exists and loaded_refs:
-            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
-        elif not folder_exists:
-            st.warning("⚠️ 'reference_imgs' 폴더 필요")
-
+        f_master = st.file_uploader("1. 중앙 데이터 (master.xlsx)", type="xlsx")
     with col2:
-        template_file = st.file_uploader("2. 양식 파일 (통합 양식 GHS MSDS(K).xlsx)", type="xlsx")
+        f_template = st.file_uploader("2. 양식 파일 (template.xlsx)", type="xlsx")
 
-product_name_input = st.text_input("제품명 입력 (B7, B10)")
-option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
-st.write("") 
+product_name = st.text_input("제품명 입력")
+st.write("")
 
-# 3. 메인 로직
-col_left, col_center, col_right = st.columns([4, 2, 4])
+col_l, col_c, col_r = st.columns([4, 2, 4])
 
-if 'converted_files' not in st.session_state:
-    st.session_state['converted_files'] = []
-    st.session_state['download_data'] = {}
+with col_l:
+    st.subheader("3. 원본 PDF")
+    f_pdfs = st.file_uploader("PDF 업로드", type=["pdf"], accept_multiple_files=True)
 
-with col_left:
-    st.subheader("3. 원본 파일 업로드")
-    uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
+if 'results' not in st.session_state:
+    st.session_state['results'] = {}
 
-with col_center:
-    st.write("") ; st.write("") ; st.write("")
-    
+with col_c:
+    st.write("") ; st.write("")
     if st.button("▶ 변환 시작", use_container_width=True):
-        if uploaded_files and master_data_file and template_file:
-            with st.spinner("양식 복제 및 매핑 중..."):
+        if f_master and f_template and f_pdfs:
+            with st.spinner("순차적 처리 및 스타일 복제 중..."):
                 
-                new_files = []
-                new_download_data = {}
+                # 중앙 데이터 로드
+                mapping = load_master_data(f_master)
+                st.toast(f"중앙 데이터 {len(mapping)}개 로드 완료")
                 
-                try: 
-                    df_master = pd.read_excel(master_data_file, sheet_name=0)
-                    df_master.columns = [str(c).replace(" ", "").upper() for c in df_master.columns]
-                    col_code = 'CODE' if 'CODE' in df_master.columns else df_master.columns[0]
-                    col_kor = 'K' if 'K' in df_master.columns else (df_master.columns[1] if len(df_master.columns)>1 else None)
-                    
-                    code_map = {}
-                    if col_kor:
-                        for idx, row in df_master.iterrows():
-                            if pd.notna(row[col_code]):
-                                k = str(row[col_code]).replace(" ", "").upper().strip()
-                                v = str(row[col_kor]).strip() if pd.notna(row[col_kor]) else ""
-                                code_map[k] = v
-                except Exception as e:
-                    st.error(f"중앙 데이터 오류: {e}")
-                    code_map = {}
-
-                for uploaded_file in uploaded_files:
-                    if option == "CFF(K)":
-                        try:
-                            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                            parsed_data = parse_pdf_ghs_logic(doc)
-                            
-                            template_file.seek(0)
-                            dest_wb = load_workbook(io.BytesIO(template_file.read()))
-                            dest_ws = dest_wb.active
-
-                            target_sheet = '위험 안전문구'
-                            if target_sheet in dest_wb.sheetnames: del dest_wb[target_sheet]
-                            data_ws = dest_wb.create_sheet(target_sheet)
-                            for r in dataframe_to_rows(df_master, index=False, header=True): data_ws.append(r)
-
-                            # 수식 청소
-                            for row in dest_ws.iter_rows():
-                                for cell in row:
-                                    if isinstance(cell, MergedCell): continue
-                                    if cell.data_type == 'f' and "ingredients" in str(cell.value):
-                                        cell.value = ""
-
-                            # 기본 데이터
-                            safe_write_value_styled(dest_ws, 7, 2, product_name_input)
-                            safe_write_value_styled(dest_ws, 10, 2, product_name_input)
-                            
-                            if parsed_data["hazard_cls"]:
-                                b20_text = "\n".join(parsed_data["hazard_cls"])
-                                safe_write_value_styled(dest_ws, 20, 2, b20_text)
-                                dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
-
-                            if parsed_data["signal_word"]:
-                                safe_write_value_styled(dest_ws, 24, 2, parsed_data["signal_word"])
-                                dest_ws['B24'].alignment = Alignment(horizontal='center', vertical='center')
-
-                            # [핵심] 행 복제 방식으로 데이터 입력
-                            write_ghs_data_clone_logic(dest_ws, parsed_data, code_map)
-
-                            # 이미지
-                            target_anchor_row = 22
-                            if hasattr(dest_ws, '_images'):
-                                preserved_imgs = []
-                                for img in dest_ws._images:
-                                    try:
-                                        if not (target_anchor_row - 2 <= img.anchor._from.row <= target_anchor_row + 2):
-                                            preserved_imgs.append(img)
-                                    except: preserved_imgs.append(img)
-                                dest_ws._images = preserved_imgs
-                            
-                            collected_pil_images = []
-                            for page_index in range(len(doc)):
-                                image_list = doc.get_page_images(page_index)
-                                for img_info in image_list:
-                                    xref = img_info[0]
-                                    base_image = doc.extract_image(xref)
-                                    image_bytes = base_image["image"]
-                                    try:
-                                        pil_img = PILImage.open(io.BytesIO(image_bytes))
-                                        matched_name = None
-                                        if loaded_refs:
-                                            matched_name = find_best_match_name(pil_img, loaded_refs)
-                                        if matched_name:
-                                            sort_key = extract_number(matched_name)
-                                            collected_pil_images.append((sort_key, pil_img))
-                                    except: continue
-                            
-                            unique_images = {}
-                            for key, img in collected_pil_images:
-                                if key not in unique_images: unique_images[key] = img
-                            
-                            final_images = sorted(unique_images.items(), key=lambda x: x[0])
-                            sorted_imgs = [item[1] for item in final_images]
-                            
-                            if sorted_imgs:
-                                unit_size = 67 
-                                icon_size = 60 
-                                padding_top = 4 
-                                padding_left = (unit_size - icon_size) // 2 
-                                total_width = unit_size * len(sorted_imgs)
-                                total_height = unit_size 
-                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                for idx, p_img in enumerate(sorted_imgs):
-                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
-                                
-                                img_byte_arr = io.BytesIO()
-                                merged_img.save(img_byte_arr, format='PNG') 
-                                img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B23')
-
-                            output = io.BytesIO()
-                            dest_wb.save(output)
-                            output.seek(0)
-                            
-                            final_name = f"{product_name_input} GHS MSDS(K).xlsx"
-                            if final_name in new_download_data:
-                                final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]} GHS MSDS(K).xlsx"
-                            
-                            new_download_data[final_name] = output.getvalue()
-                            new_files.append(final_name)
-                            
-                        except Exception as e:
-                            st.error(f"오류 ({uploaded_file.name}): {e}")
-
-                st.session_state['converted_files'] = new_files
-                st.session_state['download_data'] = new_download_data
+                results = {}
                 
-                del df_master
-                if 'doc' in locals(): doc.close()
-                if 'dest_wb' in locals(): del dest_wb
-                if 'output' in locals(): del output
+                for f_pdf in f_pdfs:
+                    try:
+                        # 1. PDF 파싱
+                        doc = fitz.open(stream=f_pdf.read(), filetype="pdf")
+                        data = parse_pdf(doc)
+                        
+                        # 2. 양식 로드
+                        f_template.seek(0)
+                        wb = load_workbook(io.BytesIO(f_template.read()))
+                        ws = wb.active
+                        
+                        # 3. 기본 정보 입력
+                        ws['B7'] = product_name
+                        ws['B10'] = product_name
+                        
+                        if data["hazard_cls"]:
+                            ws['B20'] = "\n".join(data["hazard_cls"])
+                            ws['B20'].alignment = ALIGN_LEFT
+                            
+                        if data["signal"]:
+                            ws['B24'] = data["signal"]
+                            ws['B24'].alignment = Alignment(horizontal='center', vertical='center')
+                            
+                        # 4. [핵심] 순차적 섹션 처리 (위치 자동 추적)
+                        # 반드시 위에서 아래 순서로 실행해야 밀림 현상이 반영됨
+                        
+                        # (1) H코드 (유해·위험문구 ~ 예방)
+                        cursor = process_section(ws, "유해·위험문구", "예방", data["h"], mapping, 20)
+                        
+                        # (2) 예방 (예방 ~ 대응)
+                        cursor = process_section(ws, "예방", "대응", data["prev"], mapping, cursor)
+                        
+                        # (3) 대응 (대응 ~ 저장)
+                        cursor = process_section(ws, "대응", "저장", data["resp"], mapping, cursor)
+                        
+                        # (4) 저장 (저장 ~ 폐기)
+                        cursor = process_section(ws, "저장", "폐기", data["stor"], mapping, cursor)
+                        
+                        # (5) 폐기 (폐기 ~ 3.구성성분)
+                        cursor = process_section(ws, "폐기", "3.", data["disp"], mapping, cursor)
+                        
+                        # 5. 저장
+                        out = io.BytesIO()
+                        wb.save(out)
+                        fname = f"{product_name}_{f_pdf.name.split('.')[0]}.xlsx"
+                        results[fname] = out.getvalue()
+                        
+                    except Exception as e:
+                        st.error(f"{f_pdf.name} 오류: {e}")
+                        
+                st.session_state['results'] = results
+                st.success("완료!")
                 gc.collect()
 
-                if new_files:
-                    st.success("완료! 행 복제 및 서식 유지가 완벽하게 처리되었습니다.")
-        else:
-            st.error("모든 파일을 업로드해주세요.")
-
-with col_right:
-    st.subheader("결과 다운로드")
-    if st.session_state['converted_files']:
-        for i, fname in enumerate(st.session_state['converted_files']):
-            c1, c2 = st.columns([3, 1])
-            with c1: st.text(f"📄 {fname}")
-            with c2:
-                st.download_button(
-                    label="받기", 
-                    data=st.session_state['download_data'][fname], 
-                    file_name=fname, 
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=i
-                )
+with col_r:
+    st.subheader("다운로드")
+    if st.session_state['results']:
+        for fname, data in st.session_state['results'].items():
+            st.download_button(label=f"📥 {fname}", data=data, file_name=fname, 
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
