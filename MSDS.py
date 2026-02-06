@@ -14,7 +14,7 @@ import fitz  # PyMuPDF
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (PDF 정밀 파싱 - 최종 완벽 수정)")
+st.title("MSDS 양식 변환기 (PDF 정밀 파싱 - 좌표 정렬 및 노이즈 차단)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -71,134 +71,147 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [핵심 함수] PDF 텍스트 정밀 파싱 (State Machine)
+# [함수] PDF 텍스트 정밀 파싱 (좌표 정렬 + 강력 필터링)
 # --------------------------------------------------------------------------
-def parse_pdf_state_machine(doc):
-    # 1. 노이즈 제거 및 줄 단위 리스트 생성
+def parse_pdf_ghs_logic(doc):
+    
+    # 1. 노이즈 제거 및 [좌표 순서 정렬]된 줄 리스트 생성
     clean_lines = []
     
-    # PDF 헤더/푸터 등 무시할 키워드 (공백 제거 후 비교용)
+    # 무시할 헤더/푸터 노이즈 키워드
     NOISE_KEYWORDS = [
-        "물질안전보건자료", "MSDS", "MaterialSafetyDataSheet",
-        "Coreaflavors", "주식회사고려", "HAIRCARE", "Ver.", "발행일", "개정일",
-        "제품명:", "GHS", "페이지", "PAGE"
+        "물질안전보건자료", "MSDS", "Material Safety Data Sheet",
+        "Corea flavors", "주식회사 고려", "HAIR CARE", "Ver.", "발행일", "개정일",
+        "제 품 명", "GHS", "페이지", "PAGE", "---"
     ]
 
     for page in doc:
-        text = page.get_text("text")
-        lines = text.split('\n')
-        for line in lines:
-            line_str = line.strip()
-            if not line_str: continue
+        # [핵심 수정] sort=True를 사용하여 시각적 순서(좌->우, 위->아래)로 텍스트 정렬
+        blocks = page.get_text("blocks", sort=True)
+        
+        for b in blocks:
+            # 블록 내 텍스트 (b[4])를 줄바꿈으로 나눔
+            block_text = b[4]
+            lines = block_text.split('\n')
             
-            # 노이즈 필터링
-            line_check = line_str.replace(" ", "")
-            is_noise = False
-            for kw in NOISE_KEYWORDS:
-                if kw.replace(" ", "") in line_check:
-                    is_noise = True
-                    break
-            
-            # 특정 상황 제외: "가. 제품명" 같은 항목은 노이즈 키워드가 있어도 살려야 할 수 있음
-            # 하지만 여기선 2장(유해성) 데이터를 뽑는 게 목적이므로 과감히 날려도 됨.
-            if not is_noise:
-                clean_lines.append(line_str)
+            for line in lines:
+                line_str = line.strip()
+                if not line_str: continue
+                
+                # 노이즈 필터링
+                is_noise = False
+                for kw in NOISE_KEYWORDS:
+                    if kw.replace(" ", "") in line_str.replace(" ", ""):
+                        is_noise = True
+                        break
+                
+                if not is_noise:
+                    clean_lines.append(line_str)
 
-    # 2. 상태 머신을 이용한 데이터 추출
+    # 2. 데이터 저장소
     result = {
-        "hazard_cls": [],
-        "signal_word": "",
-        "h_codes": [],
-        "p_prev": [],
-        "p_resp": [],
-        "p_stor": [],
-        "p_disp": []
+        "hazard_cls": [],       # B20
+        "signal_word": "",      # B24
+        "h_codes": [],          # B25:30
+        "p_prev": [],           # B32:41
+        "p_resp": [],           # B42:49
+        "p_stor": [],           # B50:52
+        "p_disp": []            # B53
     }
 
-    # 상태 정의
-    STATE_INIT = 0
-    STATE_HAZARD_CLS = 1    # 가. 유해성 분류
-    STATE_LABEL_START = 2   # 나. 예방조치... (대기)
-    STATE_PREV = 3          # 예방
-    STATE_RESP = 4          # 대응
-    STATE_STOR = 5          # 저장
-    STATE_DISP = 6          # 폐기
-    STATE_END = 99
-
-    current_state = STATE_INIT
+    # 3. 구역(Zone) 플래그 및 상태 머신
+    ZONE_NONE = 0
+    ZONE_HAZARD_CLS = 1    # 가. 유해성 분류
+    ZONE_LABEL_INFO = 2    # 나. 예방조치
     
-    # 정규식
-    # P코드: P300, P300+P310 (공백 허용)
+    # P코드 하위 구역
+    SUBZONE_PREV = 11      # 예방
+    SUBZONE_RESP = 12      # 대응
+    SUBZONE_STOR = 13      # 저장
+    SUBZONE_DISP = 14      # 폐기
+
+    current_zone = ZONE_NONE
+    current_subzone = None
+    
+    # 복합 P코드 정규식: P300, P300+P310, P300 + P310
     regex_code = re.compile(r"([HP]\d{3}(?:\s*\+\s*[HP]\d{3})*)")
 
+    # 유해성 분류 수집 시 절대 들어오면 안 되는 금지어 (섹션 1 내용)
+    BLACKLIST_IN_HAZARD = ["공급자정보", "회사명", "주소", "긴급전화번호", "권고용도", "사용상의제한"]
+
     for line in clean_lines:
-        line_ns = line.replace(" ", "") # 공백 제거 문자열
+        line_ns = line.replace(" ", "") # 공백제거 비교용
         
-        # [상태 전환 로직]
+        # --- [1] 메인 구역 전환 확인 ---
         
-        # 1. 유해성 분류 시작
+        # "가. 유해성·위험성 분류" 감지 -> ZONE_HAZARD_CLS 진입
         if "가.유해성" in line_ns and "분류" in line_ns:
-            current_state = STATE_HAZARD_CLS
+            current_zone = ZONE_HAZARD_CLS
             continue # 제목 줄 스킵
 
-        # 2. 경고표지 항목 (유해성 분류 끝)
+        # "나. 예방조치문구...항목" 감지 -> ZONE_LABEL_INFO 진입 (유해성 분류 종료)
         if "나.예방조치" in line_ns:
-            current_state = STATE_LABEL_START
+            current_zone = ZONE_LABEL_INFO
+            current_subzone = None
             continue
-        
-        # 3. 구성성분 (모든 추출 종료)
+
+        # "3. 구성성분" 감지 -> 종료
         if "3.구성성분" in line_ns or "다.기타" in line_ns:
-            current_state = STATE_END
+            current_zone = ZONE_NONE
             break
 
-        # [데이터 수집 로직]
-        
-        # [B20] 유해성 분류 내용
-        if current_state == STATE_HAZARD_CLS:
-            result["hazard_cls"].append(line)
-            # 분류 내용 안에서도 H코드가 있을 수 있음 (추출)
-            found = regex_code.findall(line)
-            for c in found:
-                if c.startswith("H"): result["h_codes"].append(c)
+        # --- [2] 구역별 데이터 수집 ---
 
-        # [신호어, H코드, P코드]
-        elif current_state >= STATE_LABEL_START:
+        # [ZONE 1] 유해성 분류 내용 (B20)
+        if current_zone == ZONE_HAZARD_CLS:
+            # [필터] 섹션 1의 내용이 섞여 들어오는지 확인 (공급자 정보 등)
+            is_blacklisted = False
+            for bl in BLACKLIST_IN_HAZARD:
+                if bl in line_ns:
+                    is_blacklisted = True
+                    break
             
-            # 신호어 찾기 (어디서든)
+            if not is_blacklisted:
+                result["hazard_cls"].append(line)
+                # 여기에도 H코드가 섞여 있을 수 있으니 추출
+                codes = regex_code.findall(line)
+                for c in codes:
+                    if c.startswith("H"): result["h_codes"].append(c)
+
+        # [ZONE 2] 라벨 정보 (신호어, H코드, P코드)
+        elif current_zone == ZONE_LABEL_INFO:
+            
+            # 신호어
             if "신호어" in line_ns:
                 val = line.replace("신호어", "").replace(":", "").strip()
                 if val: result["signal_word"] = val
             
-            # 유해위험문구 (H코드)
-            if "유해" in line_ns and "위험문구" in line_ns:
-                # 이 줄부터 H코드 찾기 시작 (상태 변경은 안함, 문맥상 찾음)
-                pass
-            
-            # P코드 섹션 감지 (순서대로 상태 변경)
-            if line_ns.startswith("예방"):
-                current_state = STATE_PREV
-                # 제목 줄에 코드가 있을 수도 있으므로 continue 하지 않고 아래 로직 수행
+            # P코드 서브존 전환 (엄격: 줄 시작이 키워드일 때만)
+            if line_ns.startswith("예방") and len(line_ns) < 10:
+                current_subzone = SUBZONE_PREV
             elif line_ns.startswith("대응"):
-                current_state = STATE_RESP
+                current_subzone = SUBZONE_RESP
             elif line_ns.startswith("저장"):
-                current_state = STATE_STOR
+                current_subzone = SUBZONE_STOR
             elif line_ns.startswith("폐기"):
-                current_state = STATE_DISP
+                current_subzone = SUBZONE_DISP
 
-            # 코드 추출 수행
+            # 코드 추출
             codes = regex_code.findall(line)
-            for code in codes:
-                if code.startswith("H"):
-                    result["h_codes"].append(code)
-                elif code.startswith("P"):
-                    if current_state == STATE_PREV:
-                        result["p_prev"].append(code)
-                    elif current_state == STATE_RESP:
-                        result["p_resp"].append(code)
-                    elif current_state == STATE_STOR:
-                        result["p_stor"].append(code)
-                    elif current_state == STATE_DISP:
-                        result["p_disp"].append(code)
+            for c in codes:
+                if c.startswith("H"):
+                    # H코드는 ZONE_LABEL_INFO 내 어디서든 수집 (유해위험문구 섹션)
+                    result["h_codes"].append(c)
+                
+                elif c.startswith("P"):
+                    if current_subzone == SUBZONE_PREV:
+                        result["p_prev"].append(c)
+                    elif current_subzone == SUBZONE_RESP:
+                        result["p_resp"].append(c)
+                    elif current_subzone == SUBZONE_STOR:
+                        result["p_stor"].append(c)
+                    elif current_subzone == SUBZONE_DISP:
+                        result["p_disp"].append(c)
 
     return result
 
@@ -241,14 +254,14 @@ with col_center:
                 new_files = []
                 new_download_data = {}
                 
-                # 중앙 데이터 로드 (매핑용 Dictionary)
+                # 중앙 데이터 로드
                 try: 
                     df_master = pd.read_excel(master_data_file, sheet_name=0)
                     code_map = {}
                     for idx, row in df_master.iterrows():
-                        # Key 생성 시 공백 완전 제거 (P300 + P310 -> P300+P310)
                         if pd.notna(row.iloc[0]):
-                            code_key = str(row.iloc[0]).replace(" ", "").strip()
+                            # 공백 제거, 대문자 변환하여 키 생성
+                            code_key = str(row.iloc[0]).replace(" ", "").strip().upper()
                             desc_val = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
                             code_map[code_key] = desc_val
                 except: 
@@ -258,9 +271,9 @@ with col_center:
                 for uploaded_file in uploaded_files:
                     if option == "CFF(K)":
                         try:
-                            # 1. PDF 로드 및 파싱 (State Machine)
+                            # 1. PDF 로드 및 파싱 (정렬 모드)
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                            parsed_data = parse_pdf_state_machine(doc)
+                            parsed_data = parse_pdf_ghs_logic(doc)
                             
                             # 2. 양식 파일 준비
                             template_file.seek(0)
@@ -273,7 +286,7 @@ with col_center:
                             data_ws = dest_wb.create_sheet(target_sheet)
                             for r in dataframe_to_rows(df_master, index=False, header=True): data_ws.append(r)
 
-                            # 수식 경로 청소
+                            # 수식 청소
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if cell.data_type == 'f':
@@ -290,7 +303,7 @@ with col_center:
                             # [데이터 입력]
                             # ---------------------------------------------------
                             
-                            # [B20] 유해성 분류 (리스트 -> 문자열)
+                            # [B20] 유해성 분류 (줄바꿈 유지)
                             if parsed_data["hazard_cls"]:
                                 b20_text = "\n".join(parsed_data["hazard_cls"])
                                 dest_ws['B20'] = b20_text
@@ -301,17 +314,16 @@ with col_center:
                                 dest_ws['B24'] = parsed_data["signal_word"]
                                 dest_ws['B24'].alignment = Alignment(horizontal='center', vertical='center')
 
-                            # [공통 함수] 코드 입력 및 행 숨김/해제 (완전 재작성)
+                            # [공통 함수] 코드 입력 및 행 숨김/해제
                             def fill_rows_precise(code_list, start_row, end_row):
                                 # 1. 중복 제거 및 Key 정규화
                                 unique_codes = []
                                 for c in code_list:
-                                    # PDF 추출 코드 정규화 (공백 제거)
-                                    clean_c = c.replace(" ", "").strip()
+                                    clean_c = c.replace(" ", "").strip().upper()
                                     if clean_c not in unique_codes:
                                         unique_codes.append(clean_c)
                                 
-                                # 2. [중요] 해당 범위 행 전체 숨김 해제 (Unhide All First)
+                                # 2. 해당 범위 행 전체 숨김 해제
                                 for r in range(start_row, end_row + 1):
                                     dest_ws.row_dimensions[r].hidden = False
                                 
@@ -320,37 +332,34 @@ with col_center:
                                 for code in unique_codes:
                                     if curr > end_row: break
                                     
-                                    # B열: 원본 코드 (가독성을 위해 원본에 가까운 형태나 정규화된 형태 넣기)
-                                    # 매칭을 위해선 공백 제거된 code를 사용하지만, 출력은 깔끔하게
+                                    # B열: 코드 (PDF 원본이 아니라 정규화된 코드 입력 - 깔끔하게)
                                     dest_ws.cell(row=curr, column=2).value = code
                                     
-                                    # D열: 중앙 데이터 매핑 (수식 덮어쓰기)
-                                    # code_map 키도 공백이 제거된 상태이므로 매칭됨
-                                    matched_desc = code_map.get(code, "")
+                                    # D열: 중앙 데이터 매핑
+                                    matched_desc = code_map.get(code, "") 
                                     dest_ws.cell(row=curr, column=4).value = matched_desc
                                     
                                     curr += 1
                                 
-                                # 4. [중요] 데이터가 없는 행만 다시 숨김 (Hide Empty)
+                                # 4. 남은 빈 행 다시 숨김
                                 for r in range(start_row, end_row + 1):
                                     cell_val = dest_ws.cell(row=r, column=2).value
-                                    # 값이 없거나 공백만 있는 경우 숨김
                                     if cell_val is None or str(cell_val).strip() == "":
                                         dest_ws.row_dimensions[r].hidden = True
 
                             # [B25~B30] H코드
                             fill_rows_precise(parsed_data["h_codes"], 25, 30)
 
-                            # [B32~B41] 예방 (P_PREV)
+                            # [B32~B41] 예방
                             fill_rows_precise(parsed_data["p_prev"], 32, 41)
 
-                            # [B42~B49] 대응 (P_RESP)
+                            # [B42~B49] 대응
                             fill_rows_precise(parsed_data["p_resp"], 42, 49)
 
-                            # [B50~B52] 저장 (P_STOR)
+                            # [B50~B52] 저장
                             fill_rows_precise(parsed_data["p_stor"], 50, 52)
 
-                            # [B53] 폐기 (P_DISP)
+                            # [B53] 폐기
                             fill_rows_precise(parsed_data["p_disp"], 53, 53)
 
                             # ---------------------------------------------------
@@ -431,7 +440,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! PDF 데이터가 정확하게 매핑되었습니다.")
+                    st.success("완료! PDF 데이터 매핑 오류가 완벽히 수정되었습니다.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
