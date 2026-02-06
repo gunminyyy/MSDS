@@ -4,7 +4,8 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.cell.cell import MergedCell
-from copy import copy # [필수] 스타일 복사를 위해 필요
+from openpyxl.drawing.image import Image as XLImage
+from copy import copy
 from PIL import Image as PILImage
 import io
 import re
@@ -14,7 +15,7 @@ import numpy as np
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (행 복제 & 스타일 완벽 이식)")
+st.title("MSDS 양식 변환기 (행 양식 복제 모드)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -22,7 +23,6 @@ st.markdown("---")
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
-BORDER_THIN = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
 
 # --------------------------------------------------------------------------
 # [함수] 이미지 처리
@@ -174,27 +174,27 @@ def get_description_smart(code, code_map):
     return ""
 
 # --------------------------------------------------------------------------
-# [핵심] 행 스타일 복사 함수 (행 전체 서식 복제)
+# [핵심] 행 스타일 복사 (이전 행 -> 새 행)
 # --------------------------------------------------------------------------
-def copy_row_style(ws, source_row_idx, target_row_idx):
+def copy_row_style_exact(ws, source_row_idx, target_row_idx):
     """
-    source_row_idx의 모든 셀 스타일을 target_row_idx로 복사합니다.
+    Source Row의 높이 및 셀 스타일(폰트, 테두리, 정렬, 배경색 등)을 
+    Target Row로 완벽하게 복제합니다.
     """
-    # 높이 복사
+    # 1. 행 높이 복사
     ws.row_dimensions[target_row_idx].height = ws.row_dimensions[source_row_idx].height
     
-    # 셀 단위 스타일 복사 (A열부터 K열 정도까지)
+    # 2. 셀 스타일 복사 (A~L열 정도까지)
     for col in range(1, 15): 
         source_cell = ws.cell(row=source_row_idx, column=col)
         target_cell = ws.cell(row=target_row_idx, column=col)
         
-        # 스타일이 있는 경우에만 복사
         if source_cell.has_style:
-            # 주의: _style을 직접 복사하는 것이 가장 빠르고 확실함
+            # _style 속성을 통째로 복사하는 것이 가장 정확함
             try:
                 target_cell._style = copy(source_cell._style)
             except:
-                # _style 복사가 안되면 수동 속성 복사 (안전장치)
+                # 실패 시 개별 속성 복사
                 target_cell.font = copy(source_cell.font)
                 target_cell.border = copy(source_cell.border)
                 target_cell.fill = copy(source_cell.fill)
@@ -203,31 +203,34 @@ def copy_row_style(ws, source_row_idx, target_row_idx):
                 target_cell.alignment = copy(source_cell.alignment)
 
 # --------------------------------------------------------------------------
-# [함수] 안전 쓰기 (서식은 건드리지 않고 값만 넣음)
+# [함수] 안전 쓰기 (서식은 복사된 것 유지, 값만 변경)
 # --------------------------------------------------------------------------
-def safe_write_value_only(ws, row, col, value):
+def safe_write_value_styled(ws, row, col, value):
     cell = ws.cell(row=row, column=col)
-    # 병합된 셀이면 해제 (데이터 입력 필수)
+    
+    # 병합 해제 (입력을 위해)
     if isinstance(cell, MergedCell):
         for rng in ws.merged_cells.ranges:
             if cell.coordinate in rng:
                 ws.unmerge_cells(str(rng))
                 break
-        cell = ws.cell(row=row, column=col) # 갱신
+        cell = ws.cell(row=row, column=col)
 
-    # 값 입력
     cell.value = value
     
-    # 폰트/정렬 강제 적용 (사용자 요청: 굴림 8pt, 왼쪽)
-    cell.font = FONT_STYLE
+    # [중요] 사용자가 요청한 폰트/정렬 강제 적용 (복사된 스타일 위에 덮어쓰기)
+    # 테두리(Border)는 copy_row_style_exact에서 가져온 것을 유지
+    if cell.font.name != '굴림':
+        cell.font = FONT_STYLE
+    
     cell.alignment = ALIGN_LEFT
-    cell.border = BORDER_THIN
 
 # --------------------------------------------------------------------------
-# [함수] 스마트 행 관리 (행 복제 방식)
+# [함수] 스마트 행 관리 (복제 & 채우기)
 # --------------------------------------------------------------------------
-def write_ghs_data_clone_row(ws, parsed_data, code_map):
+def write_ghs_data_clone_logic(ws, parsed_data, code_map):
     
+    # 1. 헤더 위치(앵커) 찾기
     anchors = {"H": -1, "PREV": -1, "RESP": -1, "STOR": -1, "DISP": -1}
     for r in range(1, 150):
         val = str(ws.cell(row=r, column=2).value).replace(" ", "")
@@ -243,6 +246,7 @@ def write_ghs_data_clone_row(ws, parsed_data, code_map):
     if anchors["STOR"] == -1: anchors["STOR"] = 49
     if anchors["DISP"] == -1: anchors["DISP"] = 52
 
+    # 행이 추가되면 아래쪽 앵커들은 그만큼 밀려납니다.
     offset = 0 
     
     sections = [
@@ -255,10 +259,10 @@ def write_ghs_data_clone_row(ws, parsed_data, code_map):
     
     for section_name, codes, next_section_name in sections:
         
-        # 데이터 시작 행 (헤더 바로 다음)
+        # 현재 섹션 시작 행
         start_row = anchors[section_name] + offset + 1
         
-        # 끝 지점 계산
+        # 다음 섹션 헤더 위치
         if next_section_name == "END":
             next_header_row = start_row + 1
         else:
@@ -266,7 +270,6 @@ def write_ghs_data_clone_row(ws, parsed_data, code_map):
             
         capacity = next_header_row - start_row
         
-        # 코드 정규화
         unique_codes = []
         for c in codes:
             clean = c.replace(" ", "").upper().strip()
@@ -274,22 +277,25 @@ def write_ghs_data_clone_row(ws, parsed_data, code_map):
         
         needed = len(unique_codes)
         
-        # [핵심] 행 부족 시 -> "행 삽입" 후 "첫 줄 서식 복사"
+        # [핵심] 공간 부족 시 -> 행 삽입 후 -> "바로 윗 행" 스타일 복사
         if needed > capacity:
             rows_to_add = needed - capacity
+            
+            # 다음 헤더 바로 위(섹션의 맨 끝)에 삽입
             insert_pos = next_header_row 
             
-            # 1. 행 삽입 (깡통 행 생성)
+            # 1. 깡통 행 삽입
             ws.insert_rows(insert_pos, amount=rows_to_add)
             
-            # 2. 서식 복사 (Start Row의 스타일을 새로 생긴 행들에 덮어씌움)
-            # Start Row는 해당 섹션의 첫 번째 줄이므로, 올바른 양식을 가지고 있음
-            template_row = start_row 
+            # 2. 스타일 복사 (Source: 삽입 위치 바로 위의 행 = 섹션의 마지막 빈 행)
+            source_row = insert_pos - 1
             
             for r_idx in range(rows_to_add):
                 target_r = insert_pos + r_idx
-                copy_row_style(ws, template_row, target_r)
+                # Source Row의 스타일을 Target Row로 복제
+                copy_row_style_exact(ws, source_row, target_r)
             
+            # 오프셋 누적
             offset += rows_to_add
             capacity += rows_to_add
         
@@ -298,19 +304,19 @@ def write_ghs_data_clone_row(ws, parsed_data, code_map):
         for i, code in enumerate(unique_codes):
             ws.row_dimensions[curr].hidden = False
             
-            # 값 입력 (함수 내에서 굴림 8pt, 왼쪽 정렬 적용)
-            safe_write_value_only(ws, curr, 2, code) # B열
+            # 값 입력 (스타일은 유지하되 값만 넣음)
+            safe_write_value_styled(ws, curr, 2, code) # B열
             
             desc = get_description_smart(code, code_map)
-            safe_write_value_only(ws, curr, 4, desc) # D열
+            safe_write_value_styled(ws, curr, 4, desc) # D열
             
             curr += 1
             
-        # 남은 빈 공간 정리
+        # 빈 공간 처리 (수식 삭제 & 숨김)
         limit_row = start_row + capacity
         for r in range(curr, limit_row):
-            safe_write_value_only(ws, r, 2, "")
-            safe_write_value_only(ws, r, 4, "")
+            safe_write_value_styled(ws, r, 2, "")
+            safe_write_value_styled(ws, r, 4, "")
             ws.row_dimensions[r].hidden = True
 
 # 2. 파일 업로드
@@ -347,7 +353,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("행 복제 및 양식 최적화 중..."):
+            with st.spinner("양식 복제 및 매핑 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -392,20 +398,20 @@ with col_center:
                                         cell.value = ""
 
                             # 기본 데이터
-                            safe_write_value_only(dest_ws, 7, 2, product_name_input)
-                            safe_write_value_only(dest_ws, 10, 2, product_name_input)
+                            safe_write_value_styled(dest_ws, 7, 2, product_name_input)
+                            safe_write_value_styled(dest_ws, 10, 2, product_name_input)
                             
                             if parsed_data["hazard_cls"]:
                                 b20_text = "\n".join(parsed_data["hazard_cls"])
-                                safe_write_value_only(dest_ws, 20, 2, b20_text)
+                                safe_write_value_styled(dest_ws, 20, 2, b20_text)
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
                             if parsed_data["signal_word"]:
-                                safe_write_value_only(dest_ws, 24, 2, parsed_data["signal_word"])
+                                safe_write_value_styled(dest_ws, 24, 2, parsed_data["signal_word"])
                                 dest_ws['B24'].alignment = Alignment(horizontal='center', vertical='center')
 
                             # [핵심] 행 복제 방식으로 데이터 입력
-                            write_ghs_data_clone_row(dest_ws, parsed_data, code_map)
+                            write_ghs_data_clone_logic(dest_ws, parsed_data, code_map)
 
                             # 이미지
                             target_anchor_row = 22
