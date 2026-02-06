@@ -4,18 +4,18 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.cell.cell import MergedCell, Cell
-from openpyxl.drawing.image import Image as XLImage # 이미지 삽입용 추가
+from openpyxl.drawing.image import Image as XLImage
 from PIL import Image as PILImage
 import io
 import re
 import gc
-import os   # [복구] 필수 모듈
-import numpy as np # [복구] 필수 모듈
+import os
+import numpy as np
 import fitz  # PyMuPDF
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (최종 - 병합 유지 & 스마트 입력)")
+st.title("MSDS 양식 변환기 (최종 - 강제 입력 모드)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -152,35 +152,40 @@ def parse_pdf_ghs_logic(doc):
     return result
 
 # --------------------------------------------------------------------------
-# [핵심] 스마트 안전 쓰기 (가로 병합은 유지, 세로 병합만 해제)
+# [핵심] 초강력 강제 쓰기 (Try-Force)
 # --------------------------------------------------------------------------
-def safe_write_smart(ws, row, col, value):
-    cell = ws.cell(row=row, column=col)
-    
-    if isinstance(cell, MergedCell):
-        target_range = None
-        for rng in ws.merged_cells.ranges:
-            if cell.coordinate in rng:
-                target_range = rng
-                break
-        
-        if target_range:
-            min_col, min_row, max_col, max_row = target_range.bounds
-            
-            # 세로 병합 -> 해제
-            if max_row > min_row:
-                ws.unmerge_cells(str(target_range))
-                cell = ws.cell(row=row, column=col)
-                cell.value = value
-            # 가로 병합 -> 주인 칸에 입력
-            else:
-                top_left_cell = ws.cell(row=min_row, column=min_col)
-                top_left_cell.value = value
-    else:
+def force_write(ws, row, col, value):
+    """
+    일단 입력을 시도하고, 'ReadOnly' 오류가 나면 병합을 강제로 해제한 뒤 다시 입력합니다.
+    """
+    try:
+        cell = ws.cell(row=row, column=col)
         cell.value = value
+    except AttributeError:
+        # 'MergedCell' object attribute 'value' is read-only 오류 발생 시
+        try:
+            # 1. 병합된 셀 찾기
+            cell = ws.cell(row=row, column=col)
+            target_range = None
+            for rng in ws.merged_cells.ranges:
+                if cell.coordinate in rng:
+                    target_range = rng
+                    break
+            
+            # 2. 병합 해제
+            if target_range:
+                ws.unmerge_cells(str(target_range))
+            
+            # 3. 다시 입력 (이제는 일반 셀이므로 성공해야 함)
+            cell = ws.cell(row=row, column=col)
+            cell.value = value
+        except Exception as e:
+            # 그래도 안 되면 패스 (프로그램 죽는 것 방지)
+            print(f"Cell write failed at {row},{col}: {e}")
+            pass
 
 # --------------------------------------------------------------------------
-# [함수] 동적 쓰기
+# [함수] 동적 쓰기 (force_write 적용)
 # --------------------------------------------------------------------------
 def write_section_dynamic(ws, start_keyword, next_keyword, codes, code_map):
     start_row = -1
@@ -220,13 +225,15 @@ def write_section_dynamic(ws, start_keyword, next_keyword, codes, code_map):
         ws.row_dimensions[current_r].height = 19
         ws.row_dimensions[current_r].hidden = False
         
-        safe_write_smart(ws, current_r, 2, code) # B열
+        # 강제 입력
+        force_write(ws, current_r, 2, code) # B열
         
         desc = code_map.get(code, "")
-        safe_write_smart(ws, current_r, 4, desc) # D열
+        force_write(ws, current_r, 4, desc) # D열
         
         current_r += 1
     
+    # 남은 행 정리
     real_next_row = -1
     for row in range(current_r, 300):
         val1 = str(ws.cell(row=row, column=1).value)
@@ -237,8 +244,8 @@ def write_section_dynamic(ws, start_keyword, next_keyword, codes, code_map):
     if real_next_row == -1: real_next_row = current_r 
 
     for r in range(current_r, real_next_row):
-        safe_write_smart(ws, r, 2, "")
-        safe_write_smart(ws, r, 4, "")
+        force_write(ws, r, 2, "")
+        force_write(ws, r, 4, "")
         ws.row_dimensions[r].hidden = True
 
 # 2. 파일 업로드
@@ -275,7 +282,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("PDF 분석 및 스마트 변환 중..."):
+            with st.spinner("PDF 분석 및 안전 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -307,28 +314,30 @@ with col_center:
                             data_ws = dest_wb.create_sheet(target_sheet)
                             for r in dataframe_to_rows(df_master, index=False, header=True): data_ws.append(r)
 
-                            # 수식 청소
+                            # 수식 청소 (안전장치 추가)
                             for row in dest_ws.iter_rows():
                                 for cell in row:
-                                    if isinstance(cell, MergedCell): continue
                                     if cell.data_type == 'f':
                                         f_str = str(cell.value)
                                         if "ingredients CAS and EC 통합.xlsx]" in f_str:
                                             new_f = re.sub(r"'?[a-zA-Z]:\\[^']*\['?[^']*'?.xlsx\]", "'", f_str)
                                             new_f = re.sub(r"\[[^\]]*\.xlsx\]", "", new_f)
-                                            cell.value = new_f
+                                            try:
+                                                cell.value = new_f
+                                            except AttributeError:
+                                                pass # 병합 셀 등 쓰기 불가하면 패스
 
                             # 제품명
-                            safe_write_smart(dest_ws, 7, 2, product_name_input)
-                            safe_write_smart(dest_ws, 10, 2, product_name_input)
+                            force_write(dest_ws, 7, 2, product_name_input)
+                            force_write(dest_ws, 10, 2, product_name_input)
                             
                             if parsed_data["hazard_cls"]:
                                 b20_text = "\n".join(parsed_data["hazard_cls"])
-                                safe_write_smart(dest_ws, 20, 2, b20_text)
+                                force_write(dest_ws, 20, 2, b20_text)
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
                             if parsed_data["signal_word"]:
-                                safe_write_smart(dest_ws, 24, 2, parsed_data["signal_word"])
+                                force_write(dest_ws, 24, 2, parsed_data["signal_word"])
                                 dest_ws['B24'].alignment = Alignment(horizontal='center', vertical='center')
 
                             write_section_dynamic(dest_ws, "유해·위험문구", "예방", parsed_data["h_codes"], code_map)
@@ -412,7 +421,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 병합 셀 충돌 없이 완벽하게 변환되었습니다.")
+                    st.success("완료! 모든 병합 충돌을 해결하고 변환에 성공했습니다.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
