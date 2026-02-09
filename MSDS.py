@@ -15,7 +15,7 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (좌표 기반 문장 복원 & 정밀 정제)")
+st.title("MSDS 양식 변환기 (핀셋 제거 & 높이 정밀 보정)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -80,46 +80,39 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [핵심 함수] PDF 라인 정밀 추출 (좌표 + 노이즈 제거 + 페이지 통합)
+# [핵심] PDF 라인 정밀 추출 (핀셋 노이즈 제거)
 # --------------------------------------------------------------------------
 def get_all_clean_lines_with_coords(doc):
-    """
-    모든 페이지의 텍스트를 줄 단위로 추출하되,
-    1. 헤더/푸터 영역(좌표) 제외
-    2. 노이즈 텍스트 제외
-    3. 전역 Y좌표(Global Y) 부여 (페이지 넘어가도 순서 유지)
-    """
     all_lines = []
     
-    # 노이즈 패턴
-    noise_patterns = [
-        r'^\s*\d+\s*/\s*\d+\s*$', r'물질안전보건자료', r'Material Safety', 
-        r'PAGE', r'Ver\.', r'발행일', r'주식회사\s*고려', r'Cff', 
-        r'Corea\s*flavors', r'제\s*품\s*명'
+    # 노이즈 패턴 (정규식) - 이것들이 보이면 '지우개'로 지움 (줄 삭제 X)
+    noise_regexs = [
+        r'\d+\s*/\s*\d+', # 페이지 번호
+        r'물질안전보건자료', r'Material Safety Data Sheet', 
+        r'PAGE', r'Ver\.\s*:?\s*\d+\.?\d*', r'발행일\s*:?.*', 
+        r'주식회사\s*고려.*', r'Cff', r'Corea\s*flavors.*', 
+        r'제\s*품\s*명\s*:?.*' # 제품명 헤더
     ]
     
     global_y_offset = 0
     
     for page in doc:
         page_h = page.rect.height
-        # 상하단 50px 안전하게 제외 (헤더/푸터 물리적 차단)
-        clip_rect = fitz.Rect(0, 50, page.rect.width, page_h - 50)
+        # 상하단 물리적 제외는 최소화 (내용 잘림 방지) -> 텍스트 필터링으로 대체
+        # 그래도 아주 끝자락(20px)은 안전하게 제외
+        clip_rect = fitz.Rect(0, 20, page.rect.width, page_h - 20)
         
-        # words: (x0, y0, x1, y1, "text", block_no, line_no, word_no)
         words = page.get_text("words", clip=clip_rect)
-        words.sort(key=lambda w: (w[1], w[0])) # Y우선, X차선 정렬
+        words.sort(key=lambda w: (w[1], w[0])) 
         
-        # 줄 단위로 묶기
         current_y = -100
         line_buffer = []
-        page_lines = [] # item: {'text': str, 'y0': float, 'y1': float}
+        page_lines = [] 
         
         for w in words:
             text, y0, y1 = w[4], w[1], w[3]
-            # 같은 줄 판단 기준: Y좌표 차이가 3px 이내
             if abs(y0 - current_y) > 3:
                 if line_buffer:
-                    # 이전 줄 저장
                     full_text = " ".join([item[0] for item in line_buffer])
                     l_y0 = min([item[1] for item in line_buffer])
                     l_y1 = max([item[2] for item in line_buffer])
@@ -136,15 +129,16 @@ def get_all_clean_lines_with_coords(doc):
             l_y1 = max([item[2] for item in line_buffer])
             page_lines.append({'text': full_text, 'y0': l_y0, 'y1': l_y1})
             
-        # 노이즈 필터링 및 전역 리스트 추가
+        # [수정] 줄을 통째로 날리지 않고, 노이즈만 지운 뒤 내용이 남으면 살림
         for line in page_lines:
-            is_noise = False
-            for pat in noise_patterns:
-                if re.search(pat, line['text'], re.IGNORECASE):
-                    is_noise = True; break
+            clean_txt = line['text']
+            for pat in noise_regexs:
+                # 대소문자 무시하고 패턴 제거
+                clean_txt = re.sub(pat, '', clean_txt, flags=re.IGNORECASE).strip()
             
-            if not is_noise:
-                # 전역 Y좌표 계산 (페이지 높이 누적)
+            # 지우고 났는데도 내용이 있다면 (예: "Cff 경고" -> "경고") 저장
+            if clean_txt:
+                line['text'] = clean_txt
                 line['global_y0'] = line['y0'] + global_y_offset
                 line['global_y1'] = line['y1'] + global_y_offset
                 all_lines.append(line)
@@ -154,213 +148,171 @@ def get_all_clean_lines_with_coords(doc):
     return all_lines
 
 # --------------------------------------------------------------------------
-# [핵심 함수] 섹션 데이터 추출 및 문장 병합 (Gap Logic)
+# [핵심] 섹션 데이터 추출 (Gap Logic + 제목 꼬리 핀셋 제거)
 # --------------------------------------------------------------------------
 def extract_section_smart(all_lines, start_kw, end_kw):
-    # 1. 시작/종료 인덱스 찾기
     start_idx = -1
     end_idx = -1
     
-    # Start 찾기
     for i, line in enumerate(all_lines):
         if start_kw in line['text']:
             start_idx = i
             break
-    
     if start_idx == -1: return ""
     
-    # End 찾기 (Start 이후부터)
-    # End Keyword는 리스트일 수 있음 (여러 후보)
     if isinstance(end_kw, str): end_kw = [end_kw]
-    
     for i in range(start_idx + 1, len(all_lines)):
         line_text = all_lines[i]['text']
         for ek in end_kw:
             if ek in line_text:
-                end_idx = i
-                break
+                end_idx = i; break
         if end_idx != -1: break
+    if end_idx == -1: end_idx = len(all_lines)
     
-    if end_idx == -1: end_idx = len(all_lines) # 끝까지
-    
-    # 2. 타겟 라인들 가져오기 (제목 줄 제외)
     target_lines = all_lines[start_idx+1 : end_idx]
     if not target_lines: return ""
     
-    # 3. [Tail Cleaning] 제목 잔여물 제거
-    # 첫 1~2줄이 "에 들어갔을 때", "조치사항" 등으로 시작하면 삭제
+    # [수정] 제목 잔여물 제거 (핀셋 방식)
     garbage_starts = [
         "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
         "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
         "취급요령", "저장방법", "보호구", "조치사항", "제거 방법",
         "소화제", "유해성", "로부터 생기는", "착용할 보호구", "및 예방조치",
-        "방법", "경고표지 항목", "그림문자"
+        "방법", "경고표지 항목", "그림문자", "화학물질"
     ]
     
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
-        # 잔여물 체크
-        is_garbage = False
-        for gb in garbage_starts:
-            # 문장 시작이 잔여물이거나, 잔여물과 매우 유사하면
-            if txt.startswith(gb) or gb in txt[:10]: 
-                # 이게 진짜 내용일 수도 있으니 길이 체크 (짧으면 잔여물일 확률 높음)
-                if len(txt) < len(gb) + 5: 
-                    is_garbage = True
-                # 길어도 앞부분만 잘라낼 수 있음
-                else:
-                    # 앞부분만 날림
-                    txt = txt.replace(gb, "").strip()
-                    # 특수문자 제거
-                    txt = re.sub(r"^[:\.\)\s]+", "", txt)
         
-        if not is_garbage and txt:
-            line['text'] = txt # 텍스트 업데이트
+        # 줄의 '시작 부분'에 쓰레기가 있는지 확인하고 지움 (줄 삭제 X)
+        for gb in garbage_starts:
+            if gb in txt[:20]: # 앞부분 20자 내에 잔여물이 있으면
+                # 해당 문구만 제거 (replace)
+                txt = txt.replace(gb, "").strip()
+                # 제거 후 남은 특수문자 제거
+                txt = re.sub(r"^[:\.\)\s]+", "", txt)
+        
+        if txt:
+            line['text'] = txt
             cleaned_lines.append(line)
             
     if not cleaned_lines: return ""
 
-    # 4. [Smart Merge] 간격(Gap) 기반 문장 병합
+    # 문장 병합 (Gap < 6px)
     final_text = ""
     if len(cleaned_lines) > 0:
         final_text = cleaned_lines[0]['text']
-        
         for i in range(1, len(cleaned_lines)):
             prev = cleaned_lines[i-1]
             curr = cleaned_lines[i]
-            
-            # 간격 계산 (현재줄 Top - 이전줄 Bottom)
             gap = curr['global_y0'] - prev['global_y1']
             
-            # 간격 임계값 (Threshold)
-            # 보통 줄간격은 2~5px 내외, 문단 간격은 10px 이상
-            # 여기서는 "미세한 벌어짐"을 감지해야 하므로 5px 기준
             if gap < 6.0: 
-                # 같은 문장 (Wrap) -> 공백으로 연결
                 final_text += " " + curr['text']
             else:
-                # 다른 문장 (List Item) -> 줄바꿈
                 final_text += "\n" + curr['text']
                 
     return final_text
 
 # --------------------------------------------------------------------------
-# [함수] PDF 파싱 메인 (신규 로직 통합)
+# [함수] PDF 파싱 메인
 # --------------------------------------------------------------------------
 def parse_pdf_final(doc):
-    # 1. 정밀 라인 추출 (좌표 포함)
     all_lines = get_all_clean_lines_with_coords(doc)
     
-    # 2. 텍스트 추출용 풀 텍스트 (단순 검색용)
-    full_text_simple = "\n".join([l['text'] for l in all_lines])
-
     result = {
-        "hazard_cls": [], "signal_word": "", 
-        "h_codes": [], "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
-        "composition_data": [],
-        "sec4_to_7": {} 
+        "hazard_cls": [], "signal_word": "", "h_codes": [], 
+        "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
+        "composition_data": [], "sec4_to_7": {} 
     }
 
-    # --- 기존 로직 (H/P코드, 신호어 등) ---
-    # 이 부분은 단순 텍스트 매칭이 더 효율적이므로 기존 clean_lines 방식 일부 차용
-    # 혹은 all_lines를 순회하며 처리
-    
-    state = 0 # NONE
-    for line_obj in all_lines:
-        line = line_obj['text']
-        line_ns = line.replace(" ", "")
-        
-        if "가.유해성" in line_ns and "분류" in line_ns: state = 1; continue
-        if "나.예방조치" in line_ns: state = 0; continue
-        
-        if state == 1:
-            if "공급자정보" in line_ns or "회사명" in line_ns: continue
-            result["hazard_cls"].append(line)
-            
-        if "신호어" in line_ns:
-            val = line.replace("신호어", "").replace(":", "").strip()
-            if val in ["위험", "경고"]: result["signal_word"] = val
-            # 다음 줄 탐색은 all_lines 인덱스로 가능하나 여기선 생략(대부분 같은 줄/다음 줄)
-
-    # H/P 코드 (전역 스캔)
-    # 3번 섹션 전까지만 자르기
+    # H/P 코드, 신호어 등 (기존 로직)
     limit_y = 999999
     for line in all_lines:
         if "3. 구성성분" in line['text'] or "3. 성분" in line['text']:
-            limit_y = line['global_y0']
-            break
+            limit_y = line['global_y0']; break
             
-    target_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
+    # 텍스트 풀 (섹션 2용)
+    full_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
+    
+    # 신호어 (줄 단위 검사)
+    for line in full_text_hp.split('\n'):
+        if "신호어" in line:
+            val = line.replace("신호어", "").replace(":", "").strip()
+            if val in ["위험", "경고"]: result["signal_word"] = val
+        elif line.strip() in ["위험", "경고"] and not result["signal_word"]:
+            result["signal_word"] = line.strip()
+    
+    # 유해성 분류
+    lines_hp = full_text_hp.split('\n')
+    state = 0
+    for l in lines_hp:
+        l_ns = l.replace(" ", "")
+        if "가.유해성" in l_ns and "분류" in l_ns: state=1; continue
+        if "나.예방조치" in l_ns: state=0; continue
+        if state==1 and l.strip():
+            if "공급자" not in l and "회사명" not in l:
+                result["hazard_cls"].append(l.strip())
+
+    # H/P Code
     regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
-    all_matches = regex_code.findall(target_text_hp)
+    all_matches = regex_code.findall(full_text_hp)
     seen = set()
-    if "P321" in target_text_hp and "P321" not in all_matches: all_matches.append("P321")
+    if "P321" in full_text_hp and "P321" not in all_matches: all_matches.append("P321")
     for code_raw in all_matches:
         code = code_raw.replace(" ", "").upper()
         if code in seen: continue
         seen.add(code)
         if code.startswith("H"): result["h_codes"].append(code)
         elif code.startswith("P"):
-            prefix = code.split("+")[0]
-            if prefix.startswith("P2"): result["p_prev"].append(code)
-            elif prefix.startswith("P3"): result["p_resp"].append(code)
-            elif prefix.startswith("P4"): result["p_stor"].append(code)
-            elif prefix.startswith("P5"): result["p_disp"].append(code)
+            p = code.split("+")[0]
+            if p.startswith("P2"): result["p_prev"].append(code)
+            elif p.startswith("P3"): result["p_resp"].append(code)
+            elif p.startswith("P4"): result["p_stor"].append(code)
+            elif p.startswith("P5"): result["p_disp"].append(code)
 
-    # --- 구성성분 (좌표 기반) ---
-    # 3번 ~ 4번 사이
+    # 구성성분
     regex_cas = re.compile(r'\b(\d{2,7}-\d{2}-\d)\b')
     regex_conc = re.compile(r'\b(\d+)\s*~\s*(\d+)\b')
-    
     in_comp = False
     for line in all_lines:
         txt = line['text']
-        if "3." in txt and ("성분" in txt or "Composition" in txt): in_comp = True; continue
-        if "4." in txt and ("응급" in txt or "First" in txt): in_comp = False; break
-        
+        if "3." in txt and ("성분" in txt or "Composition" in txt): in_comp=True; continue
+        if "4." in txt and ("응급" in txt or "First" in txt): in_comp=False; break
         if in_comp:
-            if re.search(r'\d+\.\d+', txt): continue # 소수점 제외
-            cas_match = regex_cas.search(txt)
-            conc_match = regex_conc.search(txt)
-            if cas_match:
-                cas_val = cas_match.group(1)
-                conc_val = None
-                if conc_match:
-                    s = conc_match.group(1); e = conc_match.group(2)
-                    if s == "1": s = "0"
-                    conc_val = f"{s} ~ {e}"
-                result["composition_data"].append((cas_val, conc_val))
+            if re.search(r'\d+\.\d+', txt): continue
+            cas = regex_cas.search(txt)
+            conc = regex_conc.search(txt)
+            if cas:
+                c_val = cas.group(1); cn_val = None
+                if conc:
+                    s, e = conc.group(1), conc.group(2)
+                    if s=="1": s="0"
+                    cn_val = f"{s} ~ {e}"
+                result["composition_data"].append((c_val, cn_val))
 
-    # --- [NEW] 섹션 4 ~ 7 (Gap Logic 적용) ---
+    # 섹션 4~7 (Gap Logic + Cleaning)
     data = {}
-    
-    # Section 4
     data["B125"] = extract_section_smart(all_lines, "나. 눈", "다. 피부")
     data["B126"] = extract_section_smart(all_lines, "다. 피부", "라. 흡입")
     data["B127"] = extract_section_smart(all_lines, "라. 흡입", "마. 먹었을")
     data["B128"] = extract_section_smart(all_lines, "마. 먹었을", "바. 기타")
     data["B129"] = extract_section_smart(all_lines, "바. 기타", ["5.", "폭발"])
-
-    # Section 5
     data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질")
     data["B133"] = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압")
     data["B134"] = extract_section_smart(all_lines, "다. 화재진압", ["6.", "누출"])
-
-    # Section 6
     data["B138"] = extract_section_smart(all_lines, "가. 인체를", "나. 환경을")
     data["B139"] = extract_section_smart(all_lines, "나. 환경을", "다. 정화")
     data["B140"] = extract_section_smart(all_lines, "다. 정화", ["7.", "취급"])
-
-    # Section 7
     data["B143"] = extract_section_smart(all_lines, "가. 안전취급", "나. 안전한")
     data["B144"] = extract_section_smart(all_lines, "나. 안전한", ["8.", "노출"])
-
+    
     result["sec4_to_7"] = data
     return result
 
 # --------------------------------------------------------------------------
-# [함수] 포맷팅 & 유틸
+# [함수] 포맷팅 & 유틸 (행 높이 보정)
 # --------------------------------------------------------------------------
 def get_description_smart(code, code_map):
     clean_code = str(code).replace(" ", "").upper().strip()
@@ -392,39 +344,51 @@ def safe_write_force(ws, row, col, value, center=False):
 def calculate_smart_height_basic(text): 
     if not text: return 19.2
     explicit_lines = str(text).count('\n') + 1
-    final_lines = max(explicit_lines, 1) # 기본
-    # 긴 줄 대략적 계산
-    for line in str(text).split('\n'):
-        if len(line) > 35: final_lines += 1
-    
+    estimated_width_bytes = 72 
+    current_bytes = 0; wrapped_lines = 1
+    for char in str(text):
+        if char == '\n': current_bytes = 0; wrapped_lines += 1; continue
+        if '가' <= char <= '힣': current_bytes += 2
+        else: current_bytes += 1
+        if current_bytes >= estimated_width_bytes: wrapped_lines += 1; current_bytes = 0 
+    final_lines = max(explicit_lines, wrapped_lines)
     if final_lines == 1: return 19.2
     elif final_lines == 2: return 23.3
     else: return 33.0
 
 def format_and_calc_height_sec47(text):
+    """
+    [수정] 높이 계산 정밀화
+    - (줄 수 * 10) + 10 공식 준수
+    - 자동 줄바꿈 감도 상향 (45자 기준)
+    """
     if not text: return "", 19.2
     
-    # [수정] 마침표 뒤 줄바꿈 보정 (기존 줄바꿈 유지 + 마침표 뒤 강제)
-    # 이미 Gap Logic으로 줄바꿈은 잘 되어 있을 것임.
-    # 추가로 마침표 뒤에 공백만 있고 줄바꿈이 없으면 추가
+    # 1. 마침표 뒤 줄바꿈 강제
     formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
-    
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
     final_text = "\n".join(lines)
     
-    # 높이 계산
-    char_limit = 50 
-    total_visual = 0
-    for line in lines:
-        l_len = 0
-        for ch in line: l_len += 2 if '가' <= ch <= '힣' else 1
-        v = math.ceil(l_len / (char_limit * 2))
-        total_visual += max(v, 1)
-        
-    if total_visual == 0: total_visual = 1
+    # 2. 높이 계산 (Wrapping 감도 조절)
+    # B열 폭에 비해 한글이 많으면 생각보다 빨리 줄바꿈됨.
+    # 기존 50자 -> 42자(84byte) 정도로 기준을 낮춰서 줄 수를 넉넉하게 계산
+    char_limit_per_line = 42 
     
-    # (줄 수 * 10) + 10
-    height = (total_visual * 10) + 10
+    total_visual_lines = 0
+    for line in lines:
+        line_len = 0
+        for ch in line:
+            line_len += 2 if '가' <= ch <= '힣' else 1
+        
+        visual_lines = math.ceil(line_len / (char_limit_per_line * 2)) 
+        if visual_lines == 0: visual_lines = 1
+        total_visual_lines += visual_lines
+    
+    if total_visual_lines == 0: total_visual_lines = 1
+    
+    # [공식 적용] (줄 수 * 10) + 10
+    height = (total_visual_lines * 10) + 10
+    
     return final_text, height
 
 def fill_fixed_range(ws, start_row, end_row, codes, code_map):
@@ -501,7 +465,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("좌표 정밀 분석 및 간격 기반 문장 복원 중..."):
+            with st.spinner("핀셋 데이터 추출 및 정밀 보정 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -593,15 +557,15 @@ with col_center:
                                     row_num = int(re.search(r"(\d+)", cell_addr).group(1))
                                     col_idx = openpyxl.utils.column_index_from_string(col_str)
                                     
-                                    # 초기화
+                                    # [1] B열 초기화
                                     safe_write_force(dest_ws, row_num, col_idx, "")
                                     
                                     if formatted_txt:
-                                        # B열 쓰기
+                                        # [2] B열 쓰기
                                         safe_write_force(dest_ws, row_num, col_idx, formatted_txt, center=False)
                                         dest_ws.row_dimensions[row_num].height = row_h
                                         
-                                        # A열 정렬 (왼쪽+수직중앙)
+                                        # [3] A열 정렬
                                         try:
                                             cell_a = dest_ws.cell(row=row_num, column=1)
                                             cell_a.alignment = ALIGN_TITLE
@@ -687,7 +651,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 좌표 기반 문장 복원 및 정밀 정제 적용됨.")
+                    st.success("완료! 내용 소실 방지 및 높이 계산 정밀 보정 성공.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
