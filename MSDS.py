@@ -11,10 +11,11 @@ import os
 import fitz  # PyMuPDF
 import numpy as np
 import gc
+import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (섹션 4~7 강제 추출 모드)")
+st.title("MSDS 양식 변환기 (헤더 정밀제거 & 사용자 맞춤 높이)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -84,7 +85,14 @@ def extract_lines_geometric(doc, start_keyword, end_keyword):
     target_lines = []
     is_collecting = False
     
+    # 노이즈 키워드 정의 (헤더/푸터 내용)
+    NOISE_KEYWORDS = [
+        "물질안전보건자료", "Material Safety Data Sheet", "PAGE", "Ver.", "발행일", 
+        "주식회사 고려", "Cff", "Corea flavors", "제품명 :"
+    ]
+
     for page in doc:
+        # [수정] 좌표로 자르지 않고 전체를 가져온 뒤 텍스트로 필터링
         words = page.get_text("words")
         words.sort(key=lambda w: (w[1], w[0]))
         
@@ -104,6 +112,13 @@ def extract_lines_geometric(doc, start_keyword, end_keyword):
         if current_line_words: page_lines.append(" ".join(current_line_words))
             
         for line in page_lines:
+            # [필터링] 노이즈 키워드가 포함된 줄은 건너뜀
+            is_noise = False
+            for kw in NOISE_KEYWORDS:
+                if kw in line: 
+                    is_noise = True; break
+            if is_noise: continue
+
             if start_keyword in line and not is_collecting:
                 is_collecting = True; continue
             if end_keyword in line and is_collecting:
@@ -113,13 +128,18 @@ def extract_lines_geometric(doc, start_keyword, end_keyword):
     return target_lines
 
 # --------------------------------------------------------------------------
-# [함수] PDF 파싱 (섹션 4~7 정규식 추출 강화)
+# [함수] PDF 파싱 (헤더 텍스트 필터링 적용)
 # --------------------------------------------------------------------------
 def parse_pdf_final(doc):
     full_text = ""
     clean_lines = []
     
-    # 1. 전체 텍스트 추출 (순서대로 병합)
+    # 노이즈 키워드 정의
+    NOISE_KEYWORDS = [
+        "물질안전보건자료", "Material Safety Data Sheet", "PAGE", "Ver.", "발행일", 
+        "주식회사 고려", "Cff", "Corea flavors", "제품명 :"
+    ]
+
     for page in doc:
         blocks = page.get_text("blocks", sort=True)
         for b in blocks:
@@ -129,9 +149,12 @@ def parse_pdf_final(doc):
             for line in lines:
                 line_str = line.strip()
                 if not line_str: continue 
+                
+                # [수정] 좌표 절삭 대신 텍스트 매칭으로 헤더 제거
                 is_noise = False
-                for kw in ["물질안전보건자료", "MSDS", "Material Safety", "PAGE", "Ver.", "발행일"]:
+                for kw in NOISE_KEYWORDS:
                     if kw in line_str: is_noise = True; break
+                
                 if not is_noise: clean_lines.append(line_str)
 
     result = {
@@ -185,7 +208,7 @@ def parse_pdf_final(doc):
             elif prefix.startswith("P4"): result["p_stor"].append(code)
             elif prefix.startswith("P5"): result["p_disp"].append(code)
 
-    # --- [기존 로직 보존] 구성성분 (좌표 기반) ---
+    # --- [기존 로직 보존] 구성성분 (좌표 기반 + 노이즈 필터링) ---
     comp_lines = extract_lines_geometric(doc, "3.", "4.")
     regex_cas = re.compile(r'\b(\d{2,7}-\d{2}-\d)\b')
     regex_conc = re.compile(r'\b(\d+)\s*~\s*(\d+)\b')
@@ -202,66 +225,75 @@ def parse_pdf_final(doc):
                 conc_val = f"{start_val} ~ {end_val}"
             result["composition_data"].append((cas_val, conc_val))
 
-    # --- [수정된 로직] 섹션 4 ~ 7 정규식 추출 (매우 강력하게) ---
-    def smart_extract(txt, start_marker, end_marker):
-        # 1. 정규식 패턴 생성 (공백/특수문자 유연하게 대응)
-        # 예: "나. 눈에" -> "나\.\s*눈"
+    # --- [수정된 로직] 섹션 4 ~ 7 정밀 추출 (헤더 청소 포함) ---
+    def smart_extract(txt, start_marker, end_marker, noise_keywords):
         p_start = re.escape(start_marker).replace(r"\ ", r"\s*") 
-        
-        # end_marker가 리스트일 경우 (여러 후보 중 먼저 나오는 것)
         if isinstance(end_marker, list):
-            # end_marker들도 정규식 패턴화
             end_patterns = [re.escape(e).replace(r"\ ", r"\s*") for e in end_marker]
-            p_end = "|".join(end_patterns) # OR 조건
+            p_end = "|".join(end_patterns)
         else:
             p_end = re.escape(end_marker).replace(r"\ ", r"\s*")
             
-        # 2. 검색 (DOTALL: 줄바꿈 포함 검색)
-        # "시작문구" + (내용) + "종료문구"
-        # non-greedy matching (*?) 사용
         pattern = f"({p_start})(.*?)({p_end})"
-        
         match = re.search(pattern, txt, re.DOTALL)
         if match:
-            # group(2)가 실제 내용
-            # 제목(시작마커) 뒤의 콜론(:)이나 공백 제거
             content = match.group(2).strip()
-            # 앞부분에 붙은 잔여물 제거 (예: " : " )
             content = re.sub(r"^[:\s]+", "", content)
-            return content.strip()
-        else:
-            return ""
+            
+            # [1] 헤더/푸터 노이즈 제거 (문단 중간에 끼어든 헤더 제거)
+            # 줄 단위로 쪼개서 노이즈 키워드가 있는 줄 삭제
+            lines = content.split('\n')
+            clean_content_lines = []
+            for line in lines:
+                is_noise = False
+                for kw in noise_keywords:
+                    if kw in line: is_noise = True; break
+                if not is_noise:
+                    clean_content_lines.append(line)
+            content = "\n".join(clean_content_lines)
 
-    # 전체 텍스트에서 섹션별 덩어리 추출 (키워드 단순화)
-    sec4_text = smart_extract(full_text, "4. 응급조치", "5. 폭발")
-    sec5_text = smart_extract(full_text, "5. 폭발", "6. 누출")
-    sec6_text = smart_extract(full_text, "6. 누출", "7. 취급")
-    sec7_text = smart_extract(full_text, "7. 취급", "8. 노출")
+            # [2] 소제목 잔여물 제거
+            garbage_starts = [
+                "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
+                "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
+                "취급요령", "저장방법", "보호구", "조치사항", "제거 방법"
+            ]
+            for _ in range(2): 
+                for garbage in garbage_starts:
+                    if content.startswith(garbage):
+                        content = content[len(garbage):].strip()
+                        content = re.sub(r"^[:\s\.]+", "", content)
+            
+            return content.strip()
+        return ""
+
+    sec4_text = smart_extract(full_text, "4. 응급조치", "5. 폭발", NOISE_KEYWORDS)
+    sec5_text = smart_extract(full_text, "5. 폭발", "6. 누출", NOISE_KEYWORDS)
+    sec6_text = smart_extract(full_text, "6. 누출", "7. 취급", NOISE_KEYWORDS)
+    sec7_text = smart_extract(full_text, "7. 취급", "8. 노출", NOISE_KEYWORDS)
     
-    # 딕셔너리 채우기 (핵심 단어로만 검색)
     data = {}
     
     # Section 4
-    # "나. 눈에 들어갔을 때" -> "나. 눈"
-    data["B125"] = smart_extract(sec4_text, "나. 눈", "다. 피부")
-    data["B126"] = smart_extract(sec4_text, "다. 피부", "라. 흡입")
-    data["B127"] = smart_extract(sec4_text, "라. 흡입", "마. 먹었을")
-    data["B128"] = smart_extract(sec4_text, "마. 먹었을", "바. 기타")
-    data["B129"] = smart_extract(sec4_text, "바. 기타", ["5.", "폭발"]) # End marker 생략 가능 시 남은 전체
+    data["B125"] = smart_extract(sec4_text, "나. 눈", "다. 피부", [])
+    data["B126"] = smart_extract(sec4_text, "다. 피부", "라. 흡입", [])
+    data["B127"] = smart_extract(sec4_text, "라. 흡입", "마. 먹었을", [])
+    data["B128"] = smart_extract(sec4_text, "마. 먹었을", "바. 기타", [])
+    data["B129"] = smart_extract(sec4_text, "바. 기타", ["5.", "폭발"], [])
 
     # Section 5
-    data["B132"] = smart_extract(sec5_text, "가. 적절한", "나. 화학물질")
-    data["B133"] = smart_extract(sec5_text, "나. 화학물질", "다. 화재진압")
-    data["B134"] = smart_extract(sec5_text, "다. 화재진압", ["6.", "누출"])
+    data["B132"] = smart_extract(sec5_text, "가. 적절한", "나. 화학물질", [])
+    data["B133"] = smart_extract(sec5_text, "나. 화학물질", "다. 화재진압", [])
+    data["B134"] = smart_extract(sec5_text, "다. 화재진압", ["6.", "누출"], [])
 
     # Section 6
-    data["B138"] = smart_extract(sec6_text, "가. 인체를", "나. 환경을")
-    data["B139"] = smart_extract(sec6_text, "나. 환경을", "다. 정화")
-    data["B140"] = smart_extract(sec6_text, "다. 정화", ["7.", "취급"])
+    data["B138"] = smart_extract(sec6_text, "가. 인체를", "나. 환경을", [])
+    data["B139"] = smart_extract(sec6_text, "나. 환경을", "다. 정화", [])
+    data["B140"] = smart_extract(sec6_text, "다. 정화", ["7.", "취급"], [])
 
     # Section 7
-    data["B143"] = smart_extract(sec7_text, "가. 안전취급", "나. 안전한")
-    data["B144"] = smart_extract(sec7_text, "나. 안전한", ["8.", "노출"])
+    data["B143"] = smart_extract(sec7_text, "가. 안전취급", "나. 안전한", [])
+    data["B144"] = smart_extract(sec7_text, "나. 안전한", ["8.", "노출"], [])
 
     result["sec4_to_7"] = data
     return result
@@ -296,7 +328,7 @@ def safe_write_force(ws, row, col, value, center=False):
     if center: cell.alignment = ALIGN_CENTER
     else: cell.alignment = ALIGN_LEFT
 
-def calculate_smart_height(text):
+def calculate_smart_height_basic(text): 
     if not text: return 19.2
     explicit_lines = str(text).count('\n') + 1
     estimated_width_bytes = 72 
@@ -313,27 +345,31 @@ def calculate_smart_height(text):
 
 def format_and_calc_height_sec47(text):
     """
-    마침표(.) 기준 줄바꿈 & (줄 수 * 10) + 10 높이 계산
+    [복구] (줄 수 * 10) + 10 공식 적용
     """
     if not text: return "", 19.2
     
-    # 여러 줄을 한 줄로 합친 뒤 다시 나눔 (PDF 줄바꿈 노이즈 제거)
-    text = text.replace('\n', ' ')
+    clean_text = text.replace('\n', ' ')
+    formatted_text = re.sub(r'(?<!\d)\.(?!\d)', '.\n', clean_text)
     
-    # 마침표 기준으로 분리 (소수점은 아님) - 간단히 . 뒤에 공백이 있으면 분리
-    # 혹은 .으로 끝나면 분리.
-    # 안전하게: . 을 . \n 으로 변경 (단, 숫자 사이의 점은 제외)
-    # lookbehind/lookahead 사용: 숫자가 아닌 것 뒤의 점, 혹은 점 뒤에 숫자가 아닌 것
-    formatted_text = re.sub(r'(?<!\d)\.(?!\d)', '.\n', text)
-    
-    # 연속된 공백/엔터 정리
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
     final_text = "\n".join(lines)
     
-    line_count = len(lines)
-    if line_count == 0: line_count = 1
+    char_limit_per_line = 50 
+    total_visual_lines = 0
+    for line in lines:
+        line_len = 0
+        for ch in line:
+            line_len += 2 if '가' <= ch <= '힣' else 1
+        visual_lines = math.ceil(line_len / (char_limit_per_line * 2)) 
+        if visual_lines == 0: visual_lines = 1
+        total_visual_lines += visual_lines
     
-    height = (line_count * 10) + 10
+    if total_visual_lines == 0: total_visual_lines = 1
+    
+    # [복구] 사용자 요청 공식: (줄 수 * 10) + 10
+    height = (total_visual_lines * 10) + 10
+    
     return final_text, height
 
 def fill_fixed_range(ws, start_row, end_row, codes, code_map):
@@ -348,7 +384,7 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map):
             code = unique_codes[i]
             desc = get_description_smart(code, code_map)
             ws.row_dimensions[current_row].hidden = False
-            final_height = calculate_smart_height(desc)
+            final_height = calculate_smart_height_basic(desc)
             ws.row_dimensions[current_row].height = final_height
             safe_write_force(ws, current_row, 2, code, center=False)
             safe_write_force(ws, current_row, 4, desc, center=False)
@@ -410,7 +446,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("모든 섹션 정밀 추출 중..."):
+            with st.spinner("헤더 정밀 제거 및 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -490,10 +526,8 @@ with col_center:
                             # 5. 구성성분
                             fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map)
 
-                            # 6. [적용] 섹션 4~7 데이터 쓰기
+                            # 6. 섹션 4~7 데이터 쓰기
                             sec_data = parsed_data["sec4_to_7"]
-                            # 키: B125 등, 값: 텍스트
-                            # 셀 주소를 행, 열 인덱스로 변환해서 쓰기
                             import openpyxl.utils
                             
                             for cell_addr, raw_text in sec_data.items():
@@ -502,7 +536,6 @@ with col_center:
                                 formatted_txt, row_h = format_and_calc_height_sec47(raw_text)
                                 
                                 try:
-                                    # B125 -> col=2, row=125
                                     col_str = re.match(r"([A-Z]+)", cell_addr).group(1)
                                     row_num = int(re.search(r"(\d+)", cell_addr).group(1))
                                     col_idx = openpyxl.utils.column_index_from_string(col_str)
@@ -589,7 +622,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 섹션 4~7까지 강력한 키워드 매칭으로 추출했습니다.")
+                    st.success("완료! 헤더 제거 및 사용자 맞춤 행 높이 적용 성공.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
