@@ -14,7 +14,7 @@ import gc
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (H코드 복구 & 줄간격 최적화)")
+st.title("MSDS 양식 변환기 (구성성분표 & 함유량 정밀 처리)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -78,13 +78,13 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [함수] PDF 파싱 (범위 제한 스캔 + 공백 제거)
+# [함수] PDF 파싱 (기존 로직 유지 + 3번 섹션 추출 추가)
 # --------------------------------------------------------------------------
-def parse_pdf_smart_range(doc):
+def parse_pdf_full_logic(doc):
     full_text = ""
     clean_lines = []
     
-    # 1. 텍스트 추출
+    # 1. 텍스트 추출 (전체 페이지)
     for page in doc:
         blocks = page.get_text("blocks", sort=True)
         for b in blocks:
@@ -92,29 +92,24 @@ def parse_pdf_smart_range(doc):
             full_text += text + "\n"
             lines = text.split('\n')
             for line in lines:
-                # [수정] 줄바꿈 문제 해결: 양옆 공백 제거 후 내용 있는 것만 수집
                 line_str = line.strip()
                 if not line_str: continue 
-                
-                # 노이즈 필터링
                 is_noise = False
                 for kw in ["물질안전보건자료", "MSDS", "Material Safety", "PAGE", "Ver.", "발행일"]:
                     if kw in line_str: is_noise = True; break
-                
                 if not is_noise: clean_lines.append(line_str)
 
     result = {
         "hazard_cls": [], "signal_word": "", 
-        "h_codes": [], "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": []
+        "h_codes": [], "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
+        "composition_data": [] # (CAS, Concentration) 튜플 리스트
     }
 
+    # --- [기존 로직] 2번 섹션 (유해성) 처리 ---
     ZONE_NONE = 0; ZONE_HAZARD = 1
     state = ZONE_NONE
-    
-    # 2. 라인별 분석 (유해성 분류 텍스트 추출)
     for i, line in enumerate(clean_lines):
         line_ns = line.replace(" ", "")
-        
         if "가.유해성" in line_ns and "분류" in line_ns:
             state = ZONE_HAZARD; continue
         if "나.예방조치" in line_ns:
@@ -122,9 +117,7 @@ def parse_pdf_smart_range(doc):
             
         if state == ZONE_HAZARD:
             if "공급자정보" in line_ns or "회사명" in line_ns: continue
-            # [수정] 빈 줄이 아닌 경우에만 추가 (Double Spacing 방지)
-            if line.strip():
-                result["hazard_cls"].append(line.strip())
+            if line.strip(): result["hazard_cls"].append(line.strip())
             
         if "신호어" in line_ns:
             val = line.replace("신호어", "").replace(":", "").strip()
@@ -137,32 +130,26 @@ def parse_pdf_smart_range(doc):
                         if nxt in ["위험", "경고"]:
                             result["signal_word"] = nxt; break
 
-    # 3. [핵심] 코드 스캔 범위 제한 (섹션 3 전까지만!)
-    # "3. 구성성분" 또는 "3.Composition" 같은 단어가 나오기 전까지의 텍스트만 자름
+    # --- [기존 로직] H/P 코드 추출 (3번 섹션 전까지만 스캔) ---
     limit_index = len(full_text)
     match_sec3 = re.search(r"3\.\s*(구성성분|Composition)", full_text)
-    if match_sec3:
-        limit_index = match_sec3.start()
+    match_sec4 = re.search(r"4\.\s*(응급조치|First)", full_text)
     
-    target_text = full_text[:limit_index] # 2번 섹션까지만 포함된 텍스트
+    if match_sec3: limit_index = match_sec3.start()
     
-    # 4. 코드 추출 및 자동 분류
-    regex = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
-    all_matches = regex.findall(target_text)
+    # H/P 코드 스캔 (3번 섹션 제외)
+    target_text_hp = full_text[:limit_index]
+    regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+    all_matches = regex_code.findall(target_text_hp)
     
     seen = set()
-    
-    # P321 강제 보정 (타겟 텍스트 내에 있다면)
-    if "P321" in target_text and "P321" not in all_matches:
-        all_matches.append("P321")
+    if "P321" in target_text_hp and "P321" not in all_matches: all_matches.append("P321")
 
     for code_raw in all_matches:
         code = code_raw.replace(" ", "").upper()
         if code in seen: continue
         seen.add(code)
-        
-        if code.startswith("H"):
-            result["h_codes"].append(code)
+        if code.startswith("H"): result["h_codes"].append(code)
         elif code.startswith("P"):
             prefix = code.split("+")[0]
             if prefix.startswith("P2"): result["p_prev"].append(code)
@@ -170,10 +157,50 @@ def parse_pdf_smart_range(doc):
             elif prefix.startswith("P4"): result["p_stor"].append(code)
             elif prefix.startswith("P5"): result["p_disp"].append(code)
 
+    # --- [신규 로직] 3번 섹션 (구성성분) 추출 ---
+    if match_sec3 and match_sec4:
+        start_idx = match_sec3.start()
+        end_idx = match_sec4.start()
+        comp_text = full_text[start_idx:end_idx]
+        
+        # 줄 단위로 분석
+        comp_lines = comp_text.split('\n')
+        
+        # CAS No 정규식 (xxxx-xx-x)
+        regex_cas = re.compile(r'\b(\d{2,7}-\d{2}-\d)\b')
+        # 함유량 정규식 (숫자 ~ 숫자) - 소수점(.)이 포함되면 안 됨!
+        # [수정] 5 ~ 10, 0 ~ 5 등 정수형 범위만 추출
+        regex_conc = re.compile(r'\b(\d+)\s*~\s*(\d+)\b')
+        
+        for line in comp_lines:
+            cas_match = regex_cas.search(line)
+            conc_match = regex_conc.search(line)
+            
+            # 소수점 체크 (소수점이 있으면 해당 라인의 함유량은 무시)
+            if "." in line and conc_match:
+                 # 숫자와 .이 붙어있는지 확인 (단순 문장 끝 . 제외)
+                 if re.search(r'\d+\.\d+', line):
+                     conc_match = None # 소수점 수치는 사용 안 함
+            
+            if cas_match:
+                cas_val = cas_match.group(1)
+                conc_val = ""
+                
+                if conc_match:
+                    start_val = conc_match.group(1)
+                    end_val = conc_match.group(2)
+                    
+                    # 1~5 -> 0~5 변환 로직
+                    if start_val == "1": start_val = "0"
+                    
+                    conc_val = f"{start_val} ~ {end_val}"
+                
+                result["composition_data"].append((cas_val, conc_val))
+
     return result
 
 # --------------------------------------------------------------------------
-# [함수] 중앙 데이터 매핑
+# [함수] 중앙 데이터 매핑 (기존 H코드용)
 # --------------------------------------------------------------------------
 def get_description_smart(code, code_map):
     clean_code = str(code).replace(" ", "").upper().strip()
@@ -215,7 +242,7 @@ def safe_write_force(ws, row, col, value, center=False):
         cell.alignment = ALIGN_LEFT
 
 # --------------------------------------------------------------------------
-# [함수] D열 기준 스마트 행 높이 계산기
+# [함수] 행 높이 계산기
 # --------------------------------------------------------------------------
 def calculate_smart_height(text):
     if not text: return 19.2
@@ -237,7 +264,7 @@ def calculate_smart_height(text):
     else: return 33.0
 
 # --------------------------------------------------------------------------
-# [핵심] 고정 범위 채우기
+# [함수] 고정 범위 채우기 (H/P코드용)
 # --------------------------------------------------------------------------
 def fill_fixed_range(ws, start_row, end_row, codes, code_map):
     unique_codes = []
@@ -247,27 +274,68 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map):
         if clean not in seen:
             unique_codes.append(clean)
             seen.add(clean)
-    
+    limit = end_row - start_row + 1
+    for i in range(limit):
+        current_row = start_row + i
+        if i < len(unique_codes):
+            code = unique_codes[i]
+            desc = get_description_smart(code, code_map)
+            ws.row_dimensions[current_row].hidden = False
+            final_height = calculate_smart_height(desc)
+            ws.row_dimensions[current_row].height = final_height
+            safe_write_force(ws, current_row, 2, code, center=False)
+            safe_write_force(ws, current_row, 4, desc, center=False)
+        else:
+            ws.row_dimensions[current_row].hidden = True
+            safe_write_force(ws, current_row, 2, "") 
+            safe_write_force(ws, current_row, 4, "")
+
+# --------------------------------------------------------------------------
+# [신규 함수] 구성성분 채우기 (80~123행)
+# --------------------------------------------------------------------------
+def fill_composition_data(ws, comp_data, cas_to_name_map):
+    """
+    comp_data: [(CAS, Concentration), ...]
+    cas_to_name_map: { 'CAS_NO': 'Chemical Name' }
+    Range: 80 ~ 123
+    """
+    start_row = 80
+    end_row = 123
     limit = end_row - start_row + 1
     
     for i in range(limit):
         current_row = start_row + i
         
-        if i < len(unique_codes):
-            code = unique_codes[i]
-            desc = get_description_smart(code, code_map)
+        # 데이터가 있고 아직 범위 내라면
+        if i < len(comp_data):
+            cas_no, concentration = comp_data[i]
             
-            ws.row_dimensions[current_row].hidden = False
-            final_height = calculate_smart_height(desc)
-            ws.row_dimensions[current_row].height = final_height
+            # 물질명 매핑 (중앙데이터 국문 시트 참조)
+            # CAS 공백제거 후 검색
+            clean_cas = cas_no.replace(" ", "").strip()
+            chem_name = cas_to_name_map.get(clean_cas, "")
             
-            safe_write_force(ws, current_row, 2, code, center=False)
-            safe_write_force(ws, current_row, 4, desc, center=False)
-            
+            # F열(함유량)이 비어있으면 숨김 처리 (소수점이어서 제외된 경우 등)
+            if not concentration:
+                ws.row_dimensions[current_row].hidden = True
+                safe_write_force(ws, current_row, 1, "") # A (Name)
+                safe_write_force(ws, current_row, 4, "") # D (CAS)
+                safe_write_force(ws, current_row, 6, "") # F (Conc)
+            else:
+                # 데이터 입력 (수식 제거됨)
+                ws.row_dimensions[current_row].hidden = False
+                ws.row_dimensions[current_row].height = 26.7 # [요청] 높이 고정
+                
+                safe_write_force(ws, current_row, 1, chem_name, center=True) # A열: 물질명
+                safe_write_force(ws, current_row, 4, cas_no, center=True)    # D열: CAS
+                safe_write_force(ws, current_row, 6, concentration, center=True) # F열: 함유량
+                
         else:
+            # 남는 행 숨김 및 초기화
             ws.row_dimensions[current_row].hidden = True
-            safe_write_force(ws, current_row, 2, "") 
+            safe_write_force(ws, current_row, 1, "")
             safe_write_force(ws, current_row, 4, "")
+            safe_write_force(ws, current_row, 6, "")
 
 # 2. 파일 업로드
 with st.expander("📂 필수 파일 업로드", expanded=True):
@@ -303,33 +371,56 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("H코드 정밀 복구 및 줄간격 조정 중..."):
+            with st.spinner("구성성분표 정밀 분석 및 작성 중..."):
                 
                 new_files = []
                 new_download_data = {}
                 
-                code_map = {}
+                # 1. 중앙 데이터 로드 (H코드용 & CAS 매핑용)
+                code_map = {} # H/P 코드용
+                cas_name_map = {} # CAS -> 물질명 매핑용
+                
                 try:
                     xls = pd.ExcelFile(master_data_file)
+                    
+                    # (1) 위험 안전문구 시트 (H/P 코드)
                     target_sheet = None
                     for sheet in xls.sheet_names:
-                        if "위험" in sheet and "안전" in sheet:
-                            target_sheet = sheet; break
-                    if target_sheet is None:
-                        for sheet in xls.sheet_names:
-                            df_check = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
-                            cols = [str(c).upper() for c in df_check.columns]
-                            if 'CODE' in cols and 'K' in cols:
-                                target_sheet = sheet; break
+                        if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
+                    if not target_sheet:
+                         # fallback
+                         for sheet in xls.sheet_names:
+                            df_tmp = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
+                            if 'CODE' in [str(c).upper() for c in df_tmp.columns]: target_sheet = sheet; break
+                    
                     if target_sheet:
-                        df_master = pd.read_excel(master_data_file, sheet_name=target_sheet)
-                        df_master.columns = [str(c).replace(" ", "").upper() for c in df_master.columns]
-                        col_code = 'CODE'; col_kor = 'K'
-                        for idx, row in df_master.iterrows():
-                            if pd.notna(row[col_code]):
-                                k = str(row[col_code]).replace(" ", "").upper().strip()
-                                v = str(row[col_kor]).strip() if pd.notna(row[col_kor]) else ""
-                                code_map[k] = v
+                        df_code = pd.read_excel(master_data_file, sheet_name=target_sheet)
+                        df_code.columns = [str(c).replace(" ", "").upper() for c in df_code.columns]
+                        col_c = 'CODE'; col_k = 'K'
+                        for _, row in df_code.iterrows():
+                            if pd.notna(row[col_c]):
+                                code_map[str(row[col_c]).replace(" ","").upper().strip()] = str(row[col_k]).strip()
+                    
+                    # (2) 국문 시트 (CAS -> 물질명)
+                    sheet_kor = None
+                    for sheet in xls.sheet_names:
+                        if "국문" in sheet: sheet_kor = sheet; break
+                    
+                    if sheet_kor:
+                        df_kor = pd.read_excel(master_data_file, sheet_name=sheet_kor)
+                        # A열: CAS (추정), B열: 물질명 (추정) - 컬럼 인덱스로 접근이 안전할 수 있음
+                        # 하지만 파일 구조상 첫번째가 CAS, 두번째가 국문명일 확률 높음
+                        # 안전하게 컬럼명 확인 혹은 인덱스 0, 1 사용
+                        # 여기서는 사용자가 "A열 CAS, B열 물질명"이라고 명시함.
+                        df_kor = df_kor.iloc[:, :2] # 앞 2개 컬럼만
+                        df_kor.columns = ['CAS', 'NAME']
+                        
+                        for _, row in df_kor.iterrows():
+                            if pd.notna(row['CAS']):
+                                c = str(row['CAS']).replace(" ", "").strip()
+                                n = str(row['NAME']).strip()
+                                cas_name_map[c] = n
+                                
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
 
@@ -337,12 +428,15 @@ with col_center:
                     if option == "CFF(K)":
                         try:
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                            parsed_data = parse_pdf_smart_range(doc)
+                            parsed_data = parse_pdf_full_logic(doc)
                             
                             template_file.seek(0)
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
                             dest_ws = dest_wb.active
 
+                            # ----------------------------------------------------
+                            # [기존 로직] 기본 데이터 입력
+                            # ----------------------------------------------------
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
@@ -352,9 +446,7 @@ with col_center:
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
                             safe_write_force(dest_ws, 10, 2, product_name_input, center=True)
                             
-                            # [핵심] 유해성 분류 (줄바꿈 최적화)
                             if parsed_data["hazard_cls"]:
-                                # 빈 줄 없는 리스트로 재생성 후 합치기
                                 clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
                                 safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
@@ -368,6 +460,12 @@ with col_center:
                             fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
                             fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
 
+                            # ----------------------------------------------------
+                            # [신규 로직] 구성성분 (80~123행) 입력
+                            # ----------------------------------------------------
+                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map)
+
+                            # 이미지 삽입
                             target_anchor_row = 22
                             if hasattr(dest_ws, '_images'):
                                 preserved_imgs = []
@@ -443,7 +541,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! H코드 복구 및 줄간격 수정 완료.")
+                    st.success("완료! 구성성분(CAS, 함유량)까지 완벽하게 처리되었습니다.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
