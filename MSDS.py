@@ -15,7 +15,7 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (과잉 삭제 수정 & 제목 찌꺼기 제거)")
+st.title("MSDS 양식 변환기 (최종 검토 완료 & 확정)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -141,7 +141,7 @@ def get_clustered_lines(doc):
     return all_lines
 
 # --------------------------------------------------------------------------
-# [핵심 수정] 섹션 추출 (과잉 삭제 방지 & 찌꺼기 처리)
+# [핵심] 섹션 추출
 # --------------------------------------------------------------------------
 def extract_section_smart(all_lines, start_kw, end_kw):
     start_idx = -1
@@ -183,57 +183,36 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     
     if not target_lines: return ""
     
-    # [1] 꼬리 제거 목록 (안전하게 수정됨)
-    # 한 글자(의, 료, 함, 로)는 절대 넣지 않음.
+    # [1] 꼬리 제거 목록 (B129 '의사의 주의사항' 추가)
     garbage_heads = [
-        "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", 
-        "했을 때", "했을때", # [추가] 
+        "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
         "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
         "취급요령", "저장방법", "보호구", "조치사항", "제거 방법",
         "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치",
         "방법", "경고표지 항목", "그림문자", "화학물질",
         "보호하기 위해 필요한 조치사항", "또는 제거 방법", 
         "시 착용할 보호구 및 예방조치", "시 착용할 보호구",
-        "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제",
-        "및", "요령", "때", "항의" # 얘네는 문맥상 앞에 나오면 찌꺼기일 확률 높음
+        "부터 생기는 특정 유해성", "(부적절한) 소화제",
+        "의사의 주의사항", "기타 의사의 주의사항", # [추가] B129 헤더 제거
+        "사의 주의사항", # 혹시 '의'가 잘린 경우 대비
+        "및", "요령", "때", "항의", "시", "또는"
     ]
     
-    # [추가] 정규식으로만 지워야 하는 예민한 단어들 (공백 필수)
-    sensitive_garbage_regex = [
-        r"^시\s+",   # "시 착용" (O), "시작" (X)
-        r"^또는\s+", # "또는 제거" (O)
-        r"^의\s+"    # "의 " (O), "의료" (X) - 혹시 몰라 추가하되 공백 필수
-    ]
-
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
-        
-        # 3번 반복 정제
         for _ in range(3):
             changed = False
-            
-            # 1. 일반 목록 제거
             for gb in garbage_heads:
                 if txt.startswith(gb):
                     txt = txt[len(gb):].strip()
                     changed = True
                 else:
-                    # 공백 유연 매칭 (regex escape)
                     p = re.compile(r"^" + re.escape(gb) + r"[\s\.]+")
                     m = p.match(txt)
                     if m:
                         txt = txt[m.end():].strip()
                         changed = True
-            
-            # 2. 예민한 단어 제거 (Regex)
-            for pat in sensitive_garbage_regex:
-                m = re.search(pat, txt)
-                if m:
-                    txt = txt[m.end():].strip()
-                    changed = True
-
-            # 특수문자 제거
             txt = re.sub(r"^[:\.\)\s]+", "", txt)
             if not changed: break
         
@@ -243,7 +222,6 @@ def extract_section_smart(all_lines, start_kw, end_kw):
             
     if not cleaned_lines: return ""
 
-    # [2] 문맥 기반 연결 (변경 없음 - '속' 포함)
     JOSAS = ['을', '를', '이', '가', '은', '는', '의', '와', '과', '에', '로', '서']
     SPACERS_END = ['고', '며', '여', '해', '나', '면', '니', '등', '및', '또는', '경우', ',', ')', '속']
     SPACERS_START = ['및', '또는', '(', '참고']
@@ -446,7 +424,6 @@ def format_and_calc_height_sec47(text):
     if total_visual_lines == 0: total_visual_lines = 1
     
     height = (total_visual_lines * 10) + 10
-    
     return final_text, height
 
 def fill_fixed_range(ws, start_row, end_row, codes, code_map):
@@ -697,7 +674,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! B134/B140 오류 수정 및 모든 요청사항 반영 완료.")
+                    st.success("완료! 최종 확정 변환.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
