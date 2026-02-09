@@ -15,7 +15,7 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (행 클러스터링 & 강력 헤더 차단)")
+st.title("MSDS 양식 변환기 (한글 붙임 처리 & 잔여물 정밀 삭제)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -27,7 +27,7 @@ ALIGN_TITLE = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [함수] 이미지 및 유틸
+# [함수] 이미지 처리
 # --------------------------------------------------------------------------
 def normalize_image(pil_img):
     try:
@@ -80,15 +80,13 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [핵심] 시각적 행 클러스터링 (Visual Row Clustering)
-# Y축이 살짝 달라도 같은 줄로 인식하게 만드는 로직
+# [핵심] 시각적 행 클러스터링
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
     
-    # 노이즈 패턴 (내용 필터링용)
     noise_regexs = [
-        r'^\s*\d+\s*/\s*\d+\s*$', # 페이지 번호 "3 / 11"
+        r'^\s*\d+\s*/\s*\d+\s*$', 
         r'물질안전보건자료', r'Material Safety Data Sheet', 
         r'PAGE', r'Ver\.\s*:?\s*\d+\.?\d*', r'발행일\s*:?.*', 
         r'주식회사\s*고려.*', r'Cff', r'Corea\s*flavors.*', 
@@ -99,61 +97,42 @@ def get_clustered_lines(doc):
     
     for page in doc:
         page_h = page.rect.height
-        
-        # [물리적 헤더 차단] 상단 60px, 하단 50px 영역은 아예 읽지 않음 (No-Fly Zone)
-        # 내용이 조금 잘릴 위험보다 헤더가 섞이는게 더 치명적이므로 과감하게 설정
         clip_rect = fitz.Rect(0, 60, page.rect.width, page_h - 50)
         
-        # words: (x0, y0, x1, y1, "text", block_no, line_no, word_no)
         words = page.get_text("words", clip=clip_rect)
-        
-        # Y축 기준으로 일단 정렬
         words.sort(key=lambda w: w[1])
         
-        # 행 클러스터링
         rows = []
         if words:
             current_row = [words[0]]
-            # 기준점: 현재 행의 첫 글자 Y좌표
             row_base_y = words[0][1]
             
             for w in words[1:]:
-                # Y좌표 차이가 8px 이내면 "같은 줄"로 간주 (관대한 기준)
                 if abs(w[1] - row_base_y) < 8:
                     current_row.append(w)
                 else:
-                    # 줄 바뀜 -> 현재 행 저장
-                    # 저장 전 X축(좌우) 정렬 필수! (뒤죽박죽 방지)
                     current_row.sort(key=lambda x: x[0])
                     rows.append(current_row)
-                    
-                    # 새로운 행 시작
                     current_row = [w]
-                    row_base_y = w[1] # 기준점 갱신
+                    row_base_y = w[1]
             
-            # 마지막 행 처리
             if current_row:
                 current_row.sort(key=lambda x: x[0])
                 rows.append(current_row)
         
-        # 클러스터링된 행을 텍스트로 변환 및 전역 좌표 부여
         for row in rows:
-            # 단어들 이어붙이기
             line_text = " ".join([w[4] for w in row])
             
-            # 노이즈 필터링 (정규식)
             is_noise = False
             for pat in noise_regexs:
                 if re.search(pat, line_text, re.IGNORECASE):
                     is_noise = True; break
             
             if not is_noise:
-                # 행의 대표 Y좌표 (평균값 사용)
                 avg_y = sum([w[1] for w in row]) / len(row)
                 all_lines.append({
                     'text': line_text,
                     'global_y0': avg_y + global_y_offset,
-                    # global_y1은 다음 행과의 간격 계산용 (바닥값 평균)
                     'global_y1': (sum([w[3] for w in row]) / len(row)) + global_y_offset
                 })
         
@@ -162,20 +141,18 @@ def get_clustered_lines(doc):
     return all_lines
 
 # --------------------------------------------------------------------------
-# [핵심] 섹션 데이터 추출 (Gap Logic + 제목 꼬리 핀셋 제거)
+# [핵심 수정] 섹션 추출 (잔여물 제거 + 한글 붙임 병합)
 # --------------------------------------------------------------------------
 def extract_section_smart(all_lines, start_kw, end_kw):
     start_idx = -1
     end_idx = -1
     
-    # Start 찾기
     for i, line in enumerate(all_lines):
         if start_kw in line['text']:
             start_idx = i
             break
     if start_idx == -1: return ""
     
-    # End 찾기
     if isinstance(end_kw, str): end_kw = [end_kw]
     for i in range(start_idx + 1, len(all_lines)):
         line_text = all_lines[i]['text']
@@ -185,19 +162,15 @@ def extract_section_smart(all_lines, start_kw, end_kw):
         if end_idx != -1: break
     if end_idx == -1: end_idx = len(all_lines)
     
-    # 타겟 라인 추출 (시작 줄 포함)
     target_lines_raw = all_lines[start_idx : end_idx]
     if not target_lines_raw: return ""
     
-    # 첫 줄 처리: 제목("나. 눈...")과 내용 분리
     first_line = target_lines_raw[0].copy()
     txt = first_line['text']
-    
     if start_kw in txt:
         parts = txt.split(start_kw, 1)
         if len(parts) > 1:
             content_part = parts[1].strip()
-            # 특수문자 제거 (: . - 등)
             content_part = re.sub(r"^[:\.\-\s]+", "", content_part)
             first_line['text'] = content_part
         else:
@@ -210,33 +183,32 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     
     if not target_lines: return ""
     
-    # [Cleaning] 제목 잔여물 제거
+    # [1. 잔여물 제거 강화] 정규식으로 공백 유연하게 매칭
     garbage_starts = [
-        "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
-        "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
-        "취급요령", "저장방법", "보호구", "조치사항", "제거 방법",
-        "소화제", "유해성", "로부터 생기는", "착용할 보호구", "및 예방조치",
-        "방법", "경고표지 항목", "그림문자", "화학물질"
+        r"에\s*접촉했을\s*때", r"에\s*들어갔을\s*때", r"들어갔을\s*때", r"접촉했을\s*때", r"했을\s*때", 
+        r"흡입했을\s*때", r"먹었을\s*때", r"주의사항", r"내용물", 
+        r"취급요령", r"저장방법", r"보호구", r"조치사항", r"제거\s*방법",
+        r"소화제", r"유해성", r"로부터\s*생기는", r"착용할\s*보호구", r"및\s*예방조치",
+        r"방법", r"경고표지\s*항목", r"그림문자", r"화학물질"
     ]
     
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
-        for gb in garbage_starts:
-            # 문구로 시작하거나, 공백 무시하고 봤을 때 유사하면 제거
-            # 공백 제거 후 비교
-            txt_nospace = txt.replace(" ", "")
-            gb_nospace = gb.replace(" ", "")
-            if txt_nospace.startswith(gb_nospace):
-                # 원본에서 해당 길이만큼 대략 잘라냄 (정확하진 않지만 안전)
-                # 더 정확히는 정규식으로 유연하게 매칭
-                p = re.compile(re.escape(gb).replace(r"\ ", r"\s*"))
-                m = p.match(txt)
-                if m:
-                    txt = txt[m.end():].strip()
         
-        # 특수문자 재정리
-        txt = re.sub(r"^[:\.\)\s]+", "", txt)
+        # 줄의 시작 부분 검사 (25자 이내)
+        head_part = txt[:25]
+        for gb_pat in garbage_starts:
+            # 정규식으로 매칭 (공백 무시)
+            match = re.search(gb_pat, head_part)
+            if match:
+                # 매칭된 부분 제거 (replace는 위험하므로 인덱스로 자름)
+                # 매칭된 문자열이 실제 head_part에 있는지 확인하고 제거
+                txt = txt[match.end():].strip()
+                # 제거 후 다시 head_part 갱신해서 반복 검사 준비
+                head_part = txt[:25]
+        
+        txt = re.sub(r"^[:\.\)\s]+", "", txt) # 특수문자 제거
         
         if txt:
             line['text'] = txt
@@ -244,22 +216,33 @@ def extract_section_smart(all_lines, start_kw, end_kw):
             
     if not cleaned_lines: return ""
 
-    # [Smart Merge] 간격(Gap) 기반 문장 병합
-    # Gap < 3.0px : 같은 문장 (Tight)
-    # Gap >= 3.0px : 다른 항목
+    # [2. 한글 붙임 병합] "배 치하시오" 방지
     final_text = ""
     if len(cleaned_lines) > 0:
         final_text = cleaned_lines[0]['text']
+        
         for i in range(1, len(cleaned_lines)):
             prev = cleaned_lines[i-1]
             curr = cleaned_lines[i]
-            
             gap = curr['global_y0'] - prev['global_y1']
             
-            if gap < 3.0: # 기준을 3px로 엄격하게 잡음
-                final_text += " " + curr['text']
+            curr_txt = curr['text']
+            
+            if gap < 3.0: 
+                # [수정] 한글끼리 만날 때 공백 없이 연결
+                last_char = final_text[-1] if final_text else ""
+                first_char = curr_txt[0] if curr_txt else ""
+                
+                # 한글 범위: 가(0xAC00) ~ 힣(0xD7A3)
+                is_last_hangul = 0xAC00 <= ord(last_char) <= 0xD7A3
+                is_first_hangul = 0xAC00 <= ord(first_char) <= 0xD7A3
+                
+                if is_last_hangul and is_first_hangul:
+                    final_text += curr_txt # 붙임
+                else:
+                    final_text += " " + curr_txt # 띄움
             else:
-                final_text += "\n" + curr['text']
+                final_text += "\n" + curr_txt
                 
     return final_text
 
@@ -267,7 +250,6 @@ def extract_section_smart(all_lines, start_kw, end_kw):
 # [함수] PDF 파싱 메인
 # --------------------------------------------------------------------------
 def parse_pdf_final(doc):
-    # 1. 클러스터링된 라인 추출
     all_lines = get_clustered_lines(doc)
     
     result = {
@@ -336,7 +318,7 @@ def parse_pdf_final(doc):
                     cn_val = f"{s} ~ {e}"
                 result["composition_data"].append((c_val, cn_val))
 
-    # 섹션 4~7 (Smart Clustering + Cleaning)
+    # 섹션 4~7
     data = {}
     data["B125"] = extract_section_smart(all_lines, "나. 눈", "다. 피부")
     data["B126"] = extract_section_smart(all_lines, "다. 피부", "라. 흡입")
@@ -403,12 +385,10 @@ def calculate_smart_height_basic(text):
 def format_and_calc_height_sec47(text):
     if not text: return "", 19.2
     
-    # 마침표 뒤 줄바꿈
     formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
     final_text = "\n".join(lines)
     
-    # 높이 계산 (Wrapping 36자 기준 - 엄격)
     char_limit_per_line = 36 
     
     total_visual_lines = 0
@@ -424,7 +404,6 @@ def format_and_calc_height_sec47(text):
     if total_visual_lines == 0: total_visual_lines = 1
     
     height = (total_visual_lines * 10) + 10
-    
     return final_text, height
 
 def fill_fixed_range(ws, start_row, end_row, codes, code_map):
@@ -501,7 +480,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("클러스터링 및 데이터 추출 중..."):
+            with st.spinner("최종 정밀 변환 처리 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -601,7 +580,7 @@ with col_center:
                                         safe_write_force(dest_ws, row_num, col_idx, formatted_txt, center=False)
                                         dest_ws.row_dimensions[row_num].height = row_h
                                         
-                                        # A열 정렬 (왼쪽+수직중앙)
+                                        # A열 정렬
                                         try:
                                             cell_a = dest_ws.cell(row=row_num, column=1)
                                             cell_a.alignment = ALIGN_TITLE
@@ -687,7 +666,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 행 클러스터링 및 헤더 차단 적용됨.")
+                    st.success("완료! 완벽한 잔여물 제거 및 한글 붙임 병합 완료.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
@@ -705,4 +684,3 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
-
