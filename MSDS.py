@@ -14,7 +14,7 @@ import gc
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (구성성분표 완벽 구현)")
+st.title("MSDS 양식 변환기 (좌표 기반 정밀 표 추출)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -78,13 +78,69 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [함수] PDF 파싱 (3번 섹션 정밀 추출 포함)
+# [함수] 좌표 기반 텍스트 행 재조립 (Geometric Row Reconstruction)
 # --------------------------------------------------------------------------
-def parse_pdf_full_logic(doc):
+def extract_lines_geometric(doc, start_keyword, end_keyword):
+    """
+    start_keyword부터 end_keyword 사이의 텍스트를
+    Y좌표 기준으로 같은 행에 있는 글자들을 묶어서 추출함.
+    """
+    target_lines = []
+    is_collecting = False
+    
+    # 1. 페이지 순회하며 단어 수집
+    for page in doc:
+        # 단어 정보: (x0, y0, x1, y1, "word", block_no, line_no, word_no)
+        words = page.get_text("words")
+        
+        # 페이지 내의 단어들을 Y좌표 순으로 정렬 (위->아래, 좌->우)
+        words.sort(key=lambda w: (w[1], w[0]))
+        
+        # 현재 페이지의 텍스트 블록을 줄 단위로 재구성 (Y좌표 3픽셀 오차 허용)
+        current_y = -100
+        current_line_words = []
+        page_lines = []
+        
+        for w in words:
+            word_text = w[4]
+            y_pos = w[1]
+            
+            if abs(y_pos - current_y) > 3: # 새로운 줄
+                if current_line_words:
+                    page_lines.append(" ".join(current_line_words))
+                current_line_words = [word_text]
+                current_y = y_pos
+            else: # 같은 줄
+                current_line_words.append(word_text)
+                
+        if current_line_words:
+            page_lines.append(" ".join(current_line_words))
+            
+        # 2. 키워드 기반 수집 상태 제어
+        for line in page_lines:
+            # 시작 키워드 체크 (예: 3. 구성성분)
+            if start_keyword in line and not is_collecting:
+                is_collecting = True
+                continue # 제목 줄은 제외
+            
+            # 종료 키워드 체크 (예: 4. 응급조치)
+            if end_keyword in line and is_collecting:
+                is_collecting = False
+                return target_lines # 수집 종료 및 반환
+            
+            if is_collecting:
+                target_lines.append(line)
+                
+    return target_lines
+
+# --------------------------------------------------------------------------
+# [함수] PDF 파싱 (좌표 기반 구성성분 추출 통합)
+# --------------------------------------------------------------------------
+def parse_pdf_final(doc):
     full_text = ""
     clean_lines = []
     
-    # 1. 텍스트 추출 (전체 페이지)
+    # 1. 기본 텍스트 추출 (2번 섹션용)
     for page in doc:
         blocks = page.get_text("blocks", sort=True)
         for b in blocks:
@@ -102,7 +158,7 @@ def parse_pdf_full_logic(doc):
     result = {
         "hazard_cls": [], "signal_word": "", 
         "h_codes": [], "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
-        "composition_data": [] # (CAS, Concentration)
+        "composition_data": [] 
     }
 
     # 2. 유해성 분류 및 신호어
@@ -133,8 +189,6 @@ def parse_pdf_full_logic(doc):
     # 3. H/P 코드 스캔 (3번 섹션 전까지만)
     limit_index = len(full_text)
     match_sec3 = re.search(r"3\.\s*(구성성분|Composition)", full_text)
-    match_sec4 = re.search(r"4\.\s*(응급조치|First)", full_text)
-    
     if match_sec3: limit_index = match_sec3.start()
     
     target_text_hp = full_text[:limit_index]
@@ -156,42 +210,38 @@ def parse_pdf_full_logic(doc):
             elif prefix.startswith("P4"): result["p_stor"].append(code)
             elif prefix.startswith("P5"): result["p_disp"].append(code)
 
-    # 4. 구성성분 추출 (3번 ~ 4번 사이)
-    if match_sec3 and match_sec4:
-        start_idx = match_sec3.start()
-        end_idx = match_sec4.start()
-        comp_text = full_text[start_idx:end_idx]
-        
-        comp_lines = comp_text.split('\n')
-        
-        # CAS No: 숫자-숫자-숫자
-        regex_cas = re.compile(r'\b(\d{2,7}-\d{2}-\d)\b')
-        # 함유량: 정수 ~ 정수 (띄어쓰기 허용)
-        regex_conc = re.compile(r'\b(\d+)\s*~\s*(\d+)\b')
-        
-        for line in comp_lines:
-            # 소수점(.)이 포함된 숫자가 있으면 무시 (예: 1.5, 0.1)
-            # 단, 문장 끝의 마침표는 제외해야 하므로 숫자 사이에 점이 있는지 확인
-            if re.search(r'\d+\.\d+', line):
-                continue
+    # 4. [핵심] 구성성분 좌표 기반 추출
+    # "3."으로 시작하는 키워드와 "4."로 시작하는 키워드를 찾음
+    # 문서마다 "3. 구성성분" 일수도 "3. 성분" 일수도 있으므로 유연하게
+    comp_lines = extract_lines_geometric(doc, "3.", "4.")
+    
+    regex_cas = re.compile(r'\b(\d{2,7}-\d{2}-\d)\b')
+    # 정수 범위만 허용 (소수점 포함된건 regex에서 매칭 안됨 -> 의도된 동작)
+    regex_conc = re.compile(r'\b(\d+)\s*~\s*(\d+)\b')
+    
+    for line in comp_lines:
+        # 소수점 데이터가 있는 라인은 아예 패스 (안전장치)
+        # 하지만 "Ver. 1.0" 같은게 있을 수 있으므로 숫자 사이의 점만 체크
+        if re.search(r'\d+\.\d+', line):
+            continue
 
-            cas_match = regex_cas.search(line)
-            conc_match = regex_conc.search(line)
+        cas_match = regex_cas.search(line)
+        conc_match = regex_conc.search(line)
+        
+        if cas_match:
+            cas_val = cas_match.group(1)
+            conc_val = None
             
-            if cas_match:
-                cas_val = cas_match.group(1)
-                conc_val = None
+            if conc_match:
+                start_val = conc_match.group(1)
+                end_val = conc_match.group(2)
                 
-                if conc_match:
-                    start_val = conc_match.group(1)
-                    end_val = conc_match.group(2)
-                    
-                    # 수치 보정: 1 ~ 5 -> 0 ~ 5
-                    if start_val == "1": start_val = "0"
-                    
-                    conc_val = f"{start_val} ~ {end_val}"
+                # [요청] 1 ~ 5 -> 0 ~ 5 변환
+                if start_val == "1": start_val = "0"
                 
-                result["composition_data"].append((cas_val, conc_val))
+                conc_val = f"{start_val} ~ {end_val}"
+            
+            result["composition_data"].append((cas_val, conc_val))
 
     return result
 
@@ -287,14 +337,9 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map):
             safe_write_force(ws, current_row, 4, "")
 
 # --------------------------------------------------------------------------
-# [신규 함수] 구성성분 채우기 (80~123행)
+# [함수] 구성성분 채우기 (80~123행)
 # --------------------------------------------------------------------------
 def fill_composition_data(ws, comp_data, cas_to_name_map):
-    """
-    comp_data: [(CAS, Concentration), ...]
-    cas_to_name_map: { 'CAS_NO': 'Chemical Name' }
-    Range: 80 ~ 123
-    """
     start_row = 80
     end_row = 123
     limit = end_row - start_row + 1
@@ -302,7 +347,7 @@ def fill_composition_data(ws, comp_data, cas_to_name_map):
     for i in range(limit):
         current_row = start_row + i
         
-        # 데이터가 있고, 함유량이 존재할 때만 표시
+        # 함유량이 있는 데이터만 표시
         if i < len(comp_data) and comp_data[i][1]:
             cas_no, concentration = comp_data[i]
             
@@ -311,14 +356,13 @@ def fill_composition_data(ws, comp_data, cas_to_name_map):
             chem_name = cas_to_name_map.get(clean_cas, "")
             
             ws.row_dimensions[current_row].hidden = False
-            ws.row_dimensions[current_row].height = 26.7 # [요청] 높이 고정
+            ws.row_dimensions[current_row].height = 26.7
             
             safe_write_force(ws, current_row, 1, chem_name, center=True) # A열
             safe_write_force(ws, current_row, 4, cas_no, center=True)    # D열
             safe_write_force(ws, current_row, 6, concentration, center=True) # F열
                 
         else:
-            # 남는 행 또는 함유량이 없는 행은 숨김
             ws.row_dimensions[current_row].hidden = True
             safe_write_force(ws, current_row, 1, "")
             safe_write_force(ws, current_row, 4, "")
@@ -358,28 +402,23 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("분석 및 변환 중..."):
+            with st.spinner("표 정밀 분석 및 작성 중..."):
                 
                 new_files = []
                 new_download_data = {}
                 
-                code_map = {} # H/P 코드용
-                cas_name_map = {} # CAS -> 물질명 매핑용
+                code_map = {} 
+                cas_name_map = {} 
                 
                 try:
                     xls = pd.ExcelFile(master_data_file)
-                    
-                    # (1) H/P 코드 시트 로드
                     target_sheet = None
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
-                    
                     if not target_sheet:
-                         # fallback
                          for sheet in xls.sheet_names:
                             df_tmp = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
                             if 'CODE' in [str(c).upper() for c in df_tmp.columns]: target_sheet = sheet; break
-                    
                     if target_sheet:
                         df_code = pd.read_excel(master_data_file, sheet_name=target_sheet)
                         df_code.columns = [str(c).replace(" ", "").upper() for c in df_code.columns]
@@ -388,24 +427,18 @@ with col_center:
                             if pd.notna(row[col_c]):
                                 code_map[str(row[col_c]).replace(" ","").upper().strip()] = str(row[col_k]).strip()
                     
-                    # (2) 국문 시트 로드 (CAS 매핑)
                     sheet_kor = None
                     for sheet in xls.sheet_names:
                         if "국문" in sheet: sheet_kor = sheet; break
-                    
                     if sheet_kor:
-                        # 국문 시트의 A열(CAS), B열(물질명) 사용
                         df_kor = pd.read_excel(master_data_file, sheet_name=sheet_kor)
-                        # 컬럼 인덱스 0, 1 사용 (안전)
                         for _, row in df_kor.iterrows():
-                            # 데이터가 있는 행만
                             val_cas = row.iloc[0]
                             val_name = row.iloc[1]
                             if pd.notna(val_cas):
                                 c = str(val_cas).replace(" ", "").strip()
                                 n = str(val_name).strip() if pd.notna(val_name) else ""
                                 cas_name_map[c] = n
-                                
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
 
@@ -413,44 +446,37 @@ with col_center:
                     if option == "CFF(K)":
                         try:
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                            parsed_data = parse_pdf_full_logic(doc)
+                            parsed_data = parse_pdf_final(doc)
                             
                             template_file.seek(0)
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
                             dest_ws = dest_wb.active
 
-                            # 1. 수식 청소
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
                                     if cell.data_type == 'f' and "ingredients" in str(cell.value):
                                         cell.value = ""
 
-                            # 2. 기본 정보
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
                             safe_write_force(dest_ws, 10, 2, product_name_input, center=True)
                             
-                            # 3. 유해성 분류
                             if parsed_data["hazard_cls"]:
                                 clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
                                 safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
-                            # 4. 신호어
                             signal_final = parsed_data["signal_word"] if parsed_data["signal_word"] else ""
                             safe_write_force(dest_ws, 24, 2, signal_final, center=False) 
 
-                            # 5. H/P 코드
                             fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map)
                             fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
                             fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
                             fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
                             fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
 
-                            # 6. 구성성분 (CAS & 함유량)
                             fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map)
 
-                            # 7. 이미지 삽입
                             target_anchor_row = 22
                             if hasattr(dest_ws, '_images'):
                                 preserved_imgs = []
@@ -519,7 +545,7 @@ with col_center:
                 st.session_state['converted_files'] = new_files
                 st.session_state['download_data'] = new_download_data
                 
-                # [Error Fix] 변수 존재 여부 확인 후 삭제
+                # [안전장치] 변수 확인 후 삭제
                 if 'df_code' in locals(): del df_code
                 if 'df_kor' in locals(): del df_kor
                 if 'doc' in locals(): doc.close()
@@ -528,7 +554,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 구성성분표 및 수치 필터링까지 완벽하게 처리되었습니다.")
+                    st.success("완료! 구성성분표 추출 및 NameError 수정 완료.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
