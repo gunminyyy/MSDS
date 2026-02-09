@@ -15,14 +15,18 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (노이즈 완벽 제거 & 정렬 고정)")
+st.title("MSDS 양식 변환기 (최종 보정: 정렬/노이즈/줄바꿈)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [스타일] 굴림 8pt, 왼쪽 정렬
+# [스타일] 굴림 8pt
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
-ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
+# 기본 데이터 셀 (왼쪽 정렬, 수직 중앙)
+ALIGN_DATA = Alignment(horizontal='left', vertical='center', wrap_text=True)
+# A열 제목 셀 (왼쪽 정렬, 수직 중앙) - 사용자 요청 반영
+ALIGN_TITLE = Alignment(horizontal='left', vertical='center', wrap_text=True)
+# 가운데 정렬 필요 시
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
@@ -85,6 +89,12 @@ def extract_lines_geometric(doc, start_keyword, end_keyword):
     target_lines = []
     is_collecting = False
     
+    # 노이즈 키워드 (헤더/푸터)
+    NOISE_KEYWORDS = [
+        "물질안전보건자료", "Material Safety Data Sheet", "PAGE", "Ver.", "발행일", 
+        "주식회사 고려", "Cff", "Corea flavors", "제품명 :"
+    ]
+
     for page in doc:
         words = page.get_text("words")
         words.sort(key=lambda w: (w[1], w[0]))
@@ -105,6 +115,12 @@ def extract_lines_geometric(doc, start_keyword, end_keyword):
         if current_line_words: page_lines.append(" ".join(current_line_words))
             
         for line in page_lines:
+            # 노이즈 필터링
+            is_noise = False
+            for kw in NOISE_KEYWORDS:
+                if kw in line: is_noise = True; break
+            if is_noise: continue
+
             if start_keyword in line and not is_collecting:
                 is_collecting = True; continue
             if end_keyword in line and is_collecting:
@@ -114,30 +130,41 @@ def extract_lines_geometric(doc, start_keyword, end_keyword):
     return target_lines
 
 # --------------------------------------------------------------------------
-# [함수] PDF 파싱 (노이즈 패턴 정밀 제거)
+# [함수] PDF 파싱 (헤더 완전 제거 및 full_text 재구성)
 # --------------------------------------------------------------------------
 def parse_pdf_final(doc):
     full_text = ""
     clean_lines = []
     
+    # 노이즈 키워드 정의
+    NOISE_KEYWORDS = [
+        "물질안전보건자료", "Material Safety Data Sheet", "PAGE", "Ver.", "발행일", 
+        "주식회사 고려", "Cff", "Corea flavors", "제품명 :"
+    ]
+
     for page in doc:
-        # 1. 텍스트 추출 (전체)
         blocks = page.get_text("blocks", sort=True)
         for b in blocks:
             text = b[4]
-            full_text += text + "\n"
             lines = text.split('\n')
             for line in lines:
                 line_str = line.strip()
                 if not line_str: continue 
                 
-                # 라인 단위 노이즈 필터링 (기본)
+                # 1. 라인 단위 노이즈 필터링
                 is_noise = False
-                # 헤더/푸터 키워드
-                for kw in ["물질안전보건자료", "MSDS", "Material Safety", "Ver.", "발행일", "주식회사 고려", "Cff"]:
+                for kw in NOISE_KEYWORDS:
                     if kw in line_str: is_noise = True; break
                 
-                if not is_noise: clean_lines.append(line_str)
+                # 2. 페이지 번호 (숫자 / 숫자) 형식 제거
+                if re.match(r'^\s*\d+\s*/\s*\d+\s*$', line_str):
+                    is_noise = True
+
+                if not is_noise: 
+                    clean_lines.append(line_str)
+    
+    # [핵심 수정] 정제된 라인들로만 full_text 재구성 (헤더 혼입 방지)
+    full_text = "\n".join(clean_lines)
 
     result = {
         "hazard_cls": [], "signal_word": "", 
@@ -207,7 +234,7 @@ def parse_pdf_final(doc):
                 conc_val = f"{start_val} ~ {end_val}"
             result["composition_data"].append((cas_val, conc_val))
 
-    # --- [수정된 로직] 섹션 4 ~ 7 정밀 추출 + 패턴 노이즈 제거 ---
+    # --- [수정된 로직] 섹션 4 ~ 7 정밀 추출 + 잔여물 제거 ---
     def smart_extract(txt, start_marker, end_marker):
         p_start = re.escape(start_marker).replace(r"\ ", r"\s*") 
         if isinstance(end_marker, list):
@@ -223,34 +250,23 @@ def parse_pdf_final(doc):
             content = match.group(2).strip()
             content = re.sub(r"^[:\s]+", "", content)
             
-            # 1. [강력한 노이즈 패턴 제거] - 문장 중간에 낀 헤더 제거
-            # 예: "3 / 11", "제 품 명 : ...", "주식회사 고려..."
-            noise_patterns = [
-                r'\d+\s*/\s*\d+',  # 페이지 번호 (3 / 11)
-                r'제\s*품\s*명\s*[:].*', # 제품명 : ...
-                r'주식회사\s*고려.*', # 회사명
-                r'Corea\s*flavors.*', # 영문 회사명
-                r'Ver\.\s*:?\s*\d+\.\d+', # Ver. : 1.0
-                r'발행일\s*[:].*' # 발행일
-            ]
-            
-            for p in noise_patterns:
-                content = re.sub(p, '', content, flags=re.IGNORECASE)
-
-            # 2. [소제목 잔여물 제거]
+            # [강력한 소제목 잔여물 제거]
+            # "로부터 생기는 특정 유해성", "에 접촉했을 때", "에 들어갔을 때" 등
             garbage_starts = [
                 "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
                 "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
                 "취급요령", "저장방법", "보호구", "조치사항", "제거 방법",
-                "소화제", "유해성"
+                "소화제", "유해성", "로부터 생기는 특정 유해성", "착용할 보호구 및 예방조치",
+                "필요한 조치사항"
             ]
-            # 두 번 실행하여 겹친 잔여물 제거
-            for _ in range(2):
+            
+            # 반복 제거 (여러 겹일 수 있음)
+            for _ in range(3):
                 content = content.strip()
                 for garbage in garbage_starts:
                     if content.startswith(garbage):
                         content = content[len(garbage):].strip()
-                # 앞부분 특수문자 제거
+                # 앞부분 특수문자/공백 제거
                 content = re.sub(r"^[:\s\.]+", "", content)
             
             return content.strip()
@@ -288,7 +304,7 @@ def parse_pdf_final(doc):
     return result
 
 # --------------------------------------------------------------------------
-# [함수] 중앙 데이터 매핑 / 높이 계산 / 범위 채우기 등 유틸
+# [함수] 유틸리티
 # --------------------------------------------------------------------------
 def get_description_smart(code, code_map):
     clean_code = str(code).replace(" ", "").upper().strip()
@@ -314,8 +330,10 @@ def safe_write_force(ws, row, col, value, center=False):
             cell.value = value
         except: pass
     if cell.font.name != '굴림': cell.font = FONT_STYLE
+    
+    # 정렬 스타일 적용
     if center: cell.alignment = ALIGN_CENTER
-    else: cell.alignment = ALIGN_LEFT
+    else: cell.alignment = ALIGN_DATA
 
 def calculate_smart_height_basic(text): 
     if not text: return 19.2
@@ -334,15 +352,16 @@ def calculate_smart_height_basic(text):
 
 def format_and_calc_height_sec47(text):
     """
-    [수정] 줄바꿈 & 높이 계산
+    [수정] 줄바꿈 살리기 + 마침표 뒤 줄바꿈 + 높이 계산
     """
     if not text: return "", 19.2
     
-    # 1. 줄바꿈 노이즈 제거 (한 줄로)
-    clean_text = text.replace('\n', ' ')
-    # 2. 마침표 뒤 줄바꿈 (숫자 사이 점 제외)
-    formatted_text = re.sub(r'(?<!\d)\.(?!\d)', '.\n', clean_text)
+    # PDF 줄바꿈을 살리되, 불필요한 공백/탭 등만 정리
+    # 마침표 뒤에 줄바꿈 추가 (이미 줄바꿈이 있으면 중복되지 않게)
+    # 1. 일단 마침표 뒤에 \n을 붙임
+    formatted_text = re.sub(r'(?<!\d)\.(?!\d)', '.\n', text)
     
+    # 2. 리스트로 만들어서 빈 줄 제거
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
     final_text = "\n".join(lines)
     
@@ -358,7 +377,7 @@ def format_and_calc_height_sec47(text):
     
     if total_visual_lines == 0: total_visual_lines = 1
     
-    # [복구] 사용자 요청 공식 (줄 수 * 13.5) + 10 (여유분)
+    # (줄 수 * 13.5) + 10
     height = (total_visual_lines * 13.5) + 10
     
     return final_text, height
@@ -437,7 +456,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("노이즈 패턴 제거 및 정렬 고정 중..."):
+            with st.spinner("헤더 제거 및 정렬/포맷팅 최종 적용 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -517,7 +536,7 @@ with col_center:
                             # 5. 구성성분
                             fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map)
 
-                            # 6. 섹션 4~7 데이터 쓰기 (B열 초기화 및 A열 정렬 추가)
+                            # 6. 섹션 4~7 데이터 쓰기 (B열 초기화 + A열 정렬 고정)
                             sec_data = parsed_data["sec4_to_7"]
                             import openpyxl.utils
                             
@@ -532,19 +551,17 @@ with col_center:
                                     # [1] B열 초기화 (기존 내용 삭제)
                                     safe_write_force(dest_ws, row_num, col_idx, "")
                                     
-                                    # [2] B열 쓰기
                                     if formatted_txt:
+                                        # [2] B열 쓰기
                                         safe_write_force(dest_ws, row_num, col_idx, formatted_txt, center=False)
                                         dest_ws.row_dimensions[row_num].height = row_h
-                                    
-                                        # [3] A열 정렬 고정 (병합 셀 고려하여 첫 번째 셀 정렬)
-                                        # A열(1열)의 해당 행 셀을 잡아 정렬
+                                        
+                                        # [3] A열 정렬 고정 (왼쪽 정렬 + 수직 가운데)
                                         try:
+                                            # A열(1열)의 해당 행 셀
                                             cell_a = dest_ws.cell(row=row_num, column=1)
-                                            # 병합된 셀이라면 병합 범위의 좌상단 셀을 찾아야 함
-                                            # 하지만 대부분 A열은 해당 행이 병합의 시작점이거나 단일 셀임
-                                            # 강제로 정렬 적용
-                                            cell_a.alignment = ALIGN_CENTER
+                                            # 스타일 강제 적용
+                                            cell_a.alignment = ALIGN_TITLE
                                         except: pass
 
                                 except Exception as e:
@@ -627,7 +644,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 노이즈 제거, B열 초기화, A열 정렬 고정 완료.")
+                    st.success("완료! 완벽한 줄바꿈, 노이즈 제거, 정렬이 적용되었습니다.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
