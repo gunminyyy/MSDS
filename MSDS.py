@@ -15,7 +15,7 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (줄 수 계산 정밀 보정판)")
+st.title("MSDS 양식 변환기 (띄어쓰기 정밀 보강 & 긴 헤더 제거)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -141,7 +141,7 @@ def get_clustered_lines(doc):
     return all_lines
 
 # --------------------------------------------------------------------------
-# [핵심] 섹션 추출
+# [핵심 수정] 섹션 추출 (긴 헤더 제거 + 띄어쓰기 강화)
 # --------------------------------------------------------------------------
 def extract_section_smart(all_lines, start_kw, end_kw):
     start_idx = -1
@@ -183,13 +183,18 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     
     if not target_lines: return ""
     
+    # [1] 꼬리 제거 (사용자 예시 반영하여 대폭 추가)
     garbage_heads = [
         "및", "요령", "때", "항의", "를", "을", "의", "함", "로", 
         "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", 
         "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
         "취급요령", "저장방법", "보호구", "조치사항", "제거 방법",
         "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치",
-        "방법", "경고표지 항목", "그림문자", "화학물질"
+        "방법", "경고표지 항목", "그림문자", "화학물질",
+        # [NEW] 긴 헤더 패턴 추가
+        "보호하기 위해 필요한 조치사항", "또는 제거 방법", 
+        "시 착용할 보호구 및 예방조치", "시 착용할 보호구",
+        "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제"
     ]
     
     cleaned_lines = []
@@ -216,27 +221,62 @@ def extract_section_smart(all_lines, start_kw, end_kw):
             
     if not cleaned_lines: return ""
 
+    # [2] 문맥 기반 띄어쓰기/붙임 로직 (보강됨)
+    # 조사 리스트
+    JOSAS = ['을', '를', '이', '가', '은', '는', '의', '와', '과', '에', '로', '서']
+    # [NEW] 띄어쓰기를 유발하는 어미/접속사/단어 리스트
+    SPACERS_END = ['고', '며', '여', '해', '나', '면', '니', '등', '및', '또는', '경우', ',', ')']
+    SPACERS_START = ['및', '또는', '(', '참고']
+
     final_text = ""
     if len(cleaned_lines) > 0:
         final_text = cleaned_lines[0]['text']
+        
         for i in range(1, len(cleaned_lines)):
             prev = cleaned_lines[i-1]
             curr = cleaned_lines[i]
             
-            gap = curr['global_y0'] - prev['global_y1']
-            curr_txt = curr['text']
+            prev_txt = prev['text'].strip()
+            curr_txt = curr['text'].strip()
             
-            if gap < 3.0: 
-                last_char = final_text[-1] if final_text else ""
+            # 1. 줄바꿈 강제 (문장 종결 or 불렛 포인트)
+            ends_with_sentence = re.search(r"(\.|시오|음|함|것|임|있음|주의|금지|참조|따르시오|마시오)$", prev_txt)
+            starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.|[가-하]\.|\(\d+\))", curr_txt)
+            
+            if ends_with_sentence or starts_with_bullet:
+                final_text += "\n" + curr_txt
+                
+            # 2. 붙임 vs 띄움 (조사 + 어미 + 접속사 판별)
+            else:
+                last_char = prev_txt[-1] if prev_txt else ""
                 first_char = curr_txt[0] if curr_txt else ""
+                
                 is_last_hangul = 0xAC00 <= ord(last_char) <= 0xD7A3
                 is_first_hangul = 0xAC00 <= ord(first_char) <= 0xD7A3
-                if is_last_hangul and is_first_hangul:
-                    final_text += curr_txt
+                
+                gap = curr['global_y0'] - prev['global_y1']
+                
+                if gap < 3.0: 
+                    # 한글끼리 만났을 때
+                    if is_last_hangul and is_first_hangul:
+                        # [조건] 앞글자가 조사/어미/특정단어 이거나, 뒷글자가 접속사면 -> 띄움
+                        need_space = False
+                        
+                        # 1) 앞 단어가 조사인가?
+                        if last_char in JOSAS: need_space = True
+                        # 2) 앞 단어가 연결 어미인가? (하고, 하며, 하여, 해서...)
+                        elif last_char in SPACERS_END: need_space = True
+                        # 3) 뒷 단어가 접속사인가?
+                        elif any(curr_txt.startswith(x) for x in SPACERS_START): need_space = True
+                        
+                        if need_space:
+                            final_text += " " + curr_txt
+                        else:
+                            final_text += curr_txt # 붙임 (배치하시오)
+                    else:
+                        final_text += " " + curr_txt # 한글 아닌 것 섞이면 띄움
                 else:
-                    final_text += " " + curr_txt
-            else:
-                final_text += "\n" + curr_txt
+                    final_text += "\n" + curr_txt
                 
     return final_text
 
@@ -375,18 +415,12 @@ def calculate_smart_height_basic(text):
     else: return 33.0
 
 def format_and_calc_height_sec47(text):
-    """
-    [수정] 줄바꿈 & 높이 계산 정밀화 (사용자 요청 반영)
-    1. 기준: 한 줄에 32자 (보수적 기준)
-    2. 공식: (총 줄 수 * 10) + 10
-    """
     if not text: return "", 19.2
     
     formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
     final_text = "\n".join(lines)
     
-    # 한 줄 기준: 32자 (이보다 길면 줄바꿈 발생으로 간주)
     char_limit_per_line = 32
     
     total_visual_lines = 0
@@ -395,14 +429,12 @@ def format_and_calc_height_sec47(text):
         for ch in line:
             line_len += 2 if '가' <= ch <= '힣' else 1.1 
         
-        # 올림 처리 (최소 1줄)
         visual_lines = math.ceil(line_len / (char_limit_per_line * 2)) 
         if visual_lines == 0: visual_lines = 1
         total_visual_lines += visual_lines
     
     if total_visual_lines == 0: total_visual_lines = 1
     
-    # [사용자 요청 공식] (줄 수 * 10) + 10
     height = (total_visual_lines * 10) + 10
     
     return final_text, height
@@ -481,7 +513,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("줄 수 정밀 계산 및 변환 중..."):
+            with st.spinner("최종 정밀 변환 처리 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -653,7 +685,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 행 높이 최적화 적용.")
+                    st.success("완료! 조사 및 문맥 기반 띄어쓰기 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
