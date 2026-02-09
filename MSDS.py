@@ -15,7 +15,7 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (헤더 정밀 제거 & 높이 기준 완화)")
+st.title("MSDS 양식 변환기 (글자 잘림 방지 & 정밀 정제)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -141,23 +141,28 @@ def get_clustered_lines(doc):
     return all_lines
 
 # --------------------------------------------------------------------------
-# [핵심 수정] 섹션 추출 ("시", "또는" 정밀 제거 & 긴 헤더 도려내기)
+# [핵심 수정] 섹션 추출 (정규식 기반 안전한 잔여물 제거)
 # --------------------------------------------------------------------------
 def extract_section_smart(all_lines, start_kw, end_kw):
     start_idx = -1
     end_idx = -1
     
+    # 1. 시작점 찾기 (공백 무시)
+    clean_start_kw = start_kw.replace(" ", "")
     for i, line in enumerate(all_lines):
-        if start_kw in line['text']:
+        if clean_start_kw in line['text'].replace(" ", ""):
             start_idx = i
             break
     if start_idx == -1: return ""
     
+    # 2. 종료점 찾기
     if isinstance(end_kw, str): end_kw = [end_kw]
+    clean_end_kws = [k.replace(" ", "") for k in end_kw]
+    
     for i in range(start_idx + 1, len(all_lines)):
-        line_text = all_lines[i]['text']
-        for ek in end_kw:
-            if ek in line_text:
+        line_clean = all_lines[i]['text'].replace(" ", "")
+        for cek in clean_end_kws:
+            if cek in line_clean:
                 end_idx = i; break
         if end_idx != -1: break
     if end_idx == -1: end_idx = len(all_lines)
@@ -165,14 +170,21 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     target_lines_raw = all_lines[start_idx : end_idx]
     if not target_lines_raw: return ""
     
+    # 3. 첫 줄 제목 제거
     first_line = target_lines_raw[0].copy()
     txt = first_line['text']
-    if start_kw in txt:
-        parts = txt.split(start_kw, 1)
-        if len(parts) > 1:
-            content_part = parts[1].strip()
-            content_part = re.sub(r"^[:\.\-\s]+", "", content_part)
-            first_line['text'] = content_part
+    escaped_kw = re.escape(start_kw)
+    pattern_str = escaped_kw.replace(r"\ ", r"\s*")
+    
+    match = re.search(pattern_str, txt)
+    if match:
+        content_part = txt[match.end():].strip()
+        content_part = re.sub(r"^[:\.\-\s]+", "", content_part)
+        first_line['text'] = content_part
+    else:
+        if start_kw in txt:
+            parts = txt.split(start_kw, 1)
+            first_line['text'] = parts[1].strip() if len(parts) > 1 else ""
         else:
             first_line['text'] = ""
     
@@ -183,49 +195,40 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     
     if not target_lines: return ""
     
-    # [1] 긴 헤더 패턴 (내용과 붙어있을 때 도려내기용)
-    long_garbage_patterns = [
-        r"시\s*착용할\s*보호구\s*및\s*예방조치",
-        r"또는\s*제거\s*방법",
-        r"보호하기\s*위해\s*필요한\s*조치사항",
-        r"부터\s*생기는\s*특정\s*유해성",
-        r"의사의\s*주의사항"
-    ]
-
-    # [2] 짧은 잔여물 (시작 부분 체크용)
-    garbage_heads = [
-        "및", "요령", "때", "항의", "를", "을", "의", "함", "로", "시", "또는",
-        "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", 
-        "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
-        "취급요령", "저장방법", "보호구", "조치사항", "제거 방법",
-        "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치",
-        "방법", "경고표지 항목", "그림문자", "화학물질"
+    # [4. 잔여물 제거 - 정규식 리스트]
+    # 주의: 한 글자(의, 료 등)는 단독으로 쓰일 때만 지우거나, 아예 목록에서 뺌
+    garbage_regex_list = [
+        # 긴 문구들
+        r"^(에\s*)?접촉했을\s*때", r"^(에\s*)?들어갔을\s*때", r"^했을\s*때", # [수정] "했을 때" 추가
+        r"^흡입했을\s*때", r"^먹었을\s*때", 
+        r"^주의사항", r"^내용물", r"^취급요령", r"^저장방법", r"^보호구", r"^조치사항", r"^제거\s*방법",
+        r"^소화제", r"^유해성", r"^로부터\s*생기는", r"^착용할\s*보호구", r"^예방조치",
+        r"^방법", r"^경고표지\s*항목", r"^그림문자", r"^화학물질", 
+        r"^의사의\s*주의사항", r"^기타\s*의사의\s*주의사항", r"^필요한\s*정보", r"^관한\s*정보",
+        r"^보호하기\s*위해\s*필요한\s*조치사항", r"^또는\s*제거\s*방법", 
+        r"^시\s*착용할\s*보호구(\s*및\s*예방조치)?", 
+        r"^부터\s*생기는(\s*특정\s*유해성)?", r"^\(?부적절한\)?\s*소화제",
+        
+        # 짧은 단어들 (공백 필수 조건 추가하여 안전하게)
+        r"^및\s+", r"^요령\s+", r"^때\s+", r"^항의\s+", 
+        r"^또는\s+", r"^시\s+"  # [수정] "시" 뒤에 공백 필수 (시작 vs 시 착용)
+        # "의"는 삭제 목록에서 완전 제외 (의료인력 보호)
     ]
     
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
         
-        # 1. 긴 헤더가 문장 속에 섞여있으면 도려냄 (Replace)
-        # 예: "시 착용할 보호구 및 예방조치 지역을..." -> "지역을..."
-        for pat in long_garbage_patterns:
-            txt = re.sub(pat, "", txt).strip()
-
-        # 2. 앞부분 짧은 잔여물 제거
+        # 반복 정제
         for _ in range(3):
             changed = False
-            for gb in garbage_heads:
-                if txt.startswith(gb):
-                    txt = txt[len(gb):].strip()
+            for pat in garbage_regex_list:
+                match = re.search(pat, txt)
+                if match:
+                    txt = txt[match.end():].strip()
                     changed = True
-                else:
-                    # 공백 유연 매칭
-                    p = re.compile(r"^" + re.escape(gb) + r"[\s\.]+")
-                    m = p.match(txt)
-                    if m:
-                        txt = txt[m.end():].strip()
-                        changed = True
             
+            # 특수문자 제거
             txt = re.sub(r"^[:\.\)\s]+", "", txt)
             if not changed: break
         
@@ -235,7 +238,7 @@ def extract_section_smart(all_lines, start_kw, end_kw):
             
     if not cleaned_lines: return ""
 
-    # [문맥 기반 연결]
+    # [5. 문맥 기반 연결 (조사 + 어미)]
     JOSAS = ['을', '를', '이', '가', '은', '는', '의', '와', '과', '에', '로', '서']
     SPACERS_END = ['고', '며', '여', '해', '나', '면', '니', '등', '및', '또는', '경우', ',', ')']
     SPACERS_START = ['및', '또는', '(', '참고']
@@ -259,10 +262,12 @@ def extract_section_smart(all_lines, start_kw, end_kw):
             else:
                 last_char = prev_txt[-1] if prev_txt else ""
                 first_char = curr_txt[0] if curr_txt else ""
+                
                 is_last_hangul = 0xAC00 <= ord(last_char) <= 0xD7A3
                 is_first_hangul = 0xAC00 <= ord(first_char) <= 0xD7A3
                 
                 gap = curr['global_y0'] - prev['global_y1']
+                
                 if gap < 3.0: 
                     if is_last_hangul and is_first_hangul:
                         need_space = False
@@ -420,7 +425,6 @@ def format_and_calc_height_sec47(text):
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
     final_text = "\n".join(lines)
     
-    # [수정] 한 줄 기준 45자 (넉넉하게 잡아서 줄 수 뻥튀기 방지)
     char_limit_per_line = 45
     
     total_visual_lines = 0
@@ -435,7 +439,6 @@ def format_and_calc_height_sec47(text):
     
     if total_visual_lines == 0: total_visual_lines = 1
     
-    # 공식 유지: (줄 수 * 10) + 10
     height = (total_visual_lines * 10) + 10
     
     return final_text, height
@@ -514,7 +517,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("잔여물 제거 및 높이 기준 완화 적용 중..."):
+            with st.spinner("최종 정밀 보정 및 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -688,7 +691,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! B140/B134 잔여물 제거 및 행 높이 정확도 향상.")
+                    st.success("완료! 글자 잘림 방지 및 정밀 정제 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
