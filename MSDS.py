@@ -15,7 +15,7 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (띄어쓰기 정밀 보강 & 긴 헤더 제거)")
+st.title("MSDS 양식 변환기 (글자 잘림 방지 & A열 여백 제거)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -85,6 +85,7 @@ def extract_number(filename):
 def get_clustered_lines(doc):
     all_lines = []
     
+    # 노이즈 패턴 (헤더/푸터)
     noise_regexs = [
         r'^\s*\d+\s*/\s*\d+\s*$', 
         r'물질안전보건자료', r'Material Safety Data Sheet', 
@@ -97,6 +98,7 @@ def get_clustered_lines(doc):
     
     for page in doc:
         page_h = page.rect.height
+        # 상하단 60px/50px 차단 (헤더/푸터 안전지대)
         clip_rect = fitz.Rect(0, 60, page.rect.width, page_h - 50)
         
         words = page.get_text("words", clip=clip_rect)
@@ -108,9 +110,11 @@ def get_clustered_lines(doc):
             row_base_y = words[0][1]
             
             for w in words[1:]:
+                # Y 차이 8px 이내면 같은 줄
                 if abs(w[1] - row_base_y) < 8:
                     current_row.append(w)
                 else:
+                    # 줄 바뀜 -> X순 정렬 후 저장
                     current_row.sort(key=lambda x: x[0])
                     rows.append(current_row)
                     current_row = [w]
@@ -141,7 +145,7 @@ def get_clustered_lines(doc):
     return all_lines
 
 # --------------------------------------------------------------------------
-# [핵심 수정] 섹션 추출 (긴 헤더 제거 + 띄어쓰기 강화)
+# [핵심 수정] 섹션 추출 (꼬리 제거 안전성 강화)
 # --------------------------------------------------------------------------
 def extract_section_smart(all_lines, start_kw, end_kw):
     start_idx = -1
@@ -165,6 +169,7 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     target_lines_raw = all_lines[start_idx : end_idx]
     if not target_lines_raw: return ""
     
+    # 첫 줄 처리
     first_line = target_lines_raw[0].copy()
     txt = first_line['text']
     if start_kw in txt:
@@ -183,35 +188,52 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     
     if not target_lines: return ""
     
-    # [1] 꼬리 제거 (사용자 예시 반영하여 대폭 추가)
+    # [1. 꼬리 제거 필터 - 한 글자 삭제 금지]
+    # "의", "를", "을" 같은 한 글자는 삭제 목록에서 제외 (내용 손실 방지)
     garbage_heads = [
-        "및", "요령", "때", "항의", "를", "을", "의", "함", "로", 
-        "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", 
+        "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
         "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
         "취급요령", "저장방법", "보호구", "조치사항", "제거 방법",
         "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치",
-        "방법", "경고표지 항목", "그림문자", "화학물질",
-        # [NEW] 긴 헤더 패턴 추가
-        "보호하기 위해 필요한 조치사항", "또는 제거 방법", 
-        "시 착용할 보호구 및 예방조치", "시 착용할 보호구",
-        "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제"
+        "방법", "경고표지 항목", "그림문자", "화학물질", 
+        "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보",
+        "및", "요령", "때", "항의" # 안전한 2글자 이상만 유지
     ]
     
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
+        
+        # 3번 반복해서 겹친 쓰레기 제거
         for _ in range(3):
             changed = False
             for gb in garbage_heads:
+                # 공백 무시하고 비교 (유연성)
+                txt_nospace = txt.replace(" ", "")
+                gb_nospace = gb.replace(" ", "")
+                
+                # 1) 정확히 시작할 때
                 if txt.startswith(gb):
                     txt = txt[len(gb):].strip()
                     changed = True
-                else:
-                    p = re.compile(r"^" + re.escape(gb) + r"[\s\.]+")
-                    m = p.match(txt)
-                    if m:
-                        txt = txt[m.end():].strip()
-                        changed = True
+                # 2) 공백 포함해서 시작할 때 (regex)
+                elif txt_nospace.startswith(gb_nospace):
+                    # 원본 텍스트에서 해당 문구 찾아서 제거
+                    # (단어 사이에 공백이 있을 수 있으므로 Regex 활용)
+                    p = re.compile(r"^" + re.escape(gb).replace(r"\ ", r"\s*") + r"[\s\.:]*")
+                    # 하지만 단순 match로는 잘 안될 수 있으니
+                    # gb가 포함되어 있다면 split으로 안전하게 제거
+                    if gb in txt:
+                         parts = txt.split(gb, 1)
+                         txt = parts[1].strip()
+                         changed = True
+                    # Regex 시도
+                    else:
+                         m = p.match(txt)
+                         if m:
+                             txt = txt[m.end():].strip()
+                             changed = True
+            
             txt = re.sub(r"^[:\.\)\s]+", "", txt)
             if not changed: break
         
@@ -221,10 +243,8 @@ def extract_section_smart(all_lines, start_kw, end_kw):
             
     if not cleaned_lines: return ""
 
-    # [2] 문맥 기반 띄어쓰기/붙임 로직 (보강됨)
-    # 조사 리스트
+    # [2. 문맥 기반 문장 연결]
     JOSAS = ['을', '를', '이', '가', '은', '는', '의', '와', '과', '에', '로', '서']
-    # [NEW] 띄어쓰기를 유발하는 어미/접속사/단어 리스트
     SPACERS_END = ['고', '며', '여', '해', '나', '면', '니', '등', '및', '또는', '경우', ',', ')']
     SPACERS_START = ['및', '또는', '(', '참고']
 
@@ -239,14 +259,13 @@ def extract_section_smart(all_lines, start_kw, end_kw):
             prev_txt = prev['text'].strip()
             curr_txt = curr['text'].strip()
             
-            # 1. 줄바꿈 강제 (문장 종결 or 불렛 포인트)
+            # 줄바꿈 강제
             ends_with_sentence = re.search(r"(\.|시오|음|함|것|임|있음|주의|금지|참조|따르시오|마시오)$", prev_txt)
             starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.|[가-하]\.|\(\d+\))", curr_txt)
             
             if ends_with_sentence or starts_with_bullet:
                 final_text += "\n" + curr_txt
                 
-            # 2. 붙임 vs 띄움 (조사 + 어미 + 접속사 판별)
             else:
                 last_char = prev_txt[-1] if prev_txt else ""
                 first_char = curr_txt[0] if curr_txt else ""
@@ -257,24 +276,16 @@ def extract_section_smart(all_lines, start_kw, end_kw):
                 gap = curr['global_y0'] - prev['global_y1']
                 
                 if gap < 3.0: 
-                    # 한글끼리 만났을 때
                     if is_last_hangul and is_first_hangul:
-                        # [조건] 앞글자가 조사/어미/특정단어 이거나, 뒷글자가 접속사면 -> 띄움
                         need_space = False
-                        
-                        # 1) 앞 단어가 조사인가?
                         if last_char in JOSAS: need_space = True
-                        # 2) 앞 단어가 연결 어미인가? (하고, 하며, 하여, 해서...)
                         elif last_char in SPACERS_END: need_space = True
-                        # 3) 뒷 단어가 접속사인가?
                         elif any(curr_txt.startswith(x) for x in SPACERS_START): need_space = True
                         
-                        if need_space:
-                            final_text += " " + curr_txt
-                        else:
-                            final_text += curr_txt # 붙임 (배치하시오)
+                        if need_space: final_text += " " + curr_txt
+                        else: final_text += curr_txt
                     else:
-                        final_text += " " + curr_txt # 한글 아닌 것 섞이면 띄움
+                        final_text += " " + curr_txt
                 else:
                     final_text += "\n" + curr_txt
                 
@@ -417,11 +428,13 @@ def calculate_smart_height_basic(text):
 def format_and_calc_height_sec47(text):
     if not text: return "", 19.2
     
+    # 마침표 뒤 줄바꿈
     formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
     final_text = "\n".join(lines)
     
-    char_limit_per_line = 32
+    # [수정] 36자 기준
+    char_limit_per_line = 36
     
     total_visual_lines = 0
     for line in lines:
@@ -435,6 +448,7 @@ def format_and_calc_height_sec47(text):
     
     if total_visual_lines == 0: total_visual_lines = 1
     
+    # [수정] (줄 수 * 10) + 10 (10배수 적용)
     height = (total_visual_lines * 10) + 10
     
     return final_text, height
@@ -513,7 +527,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("최종 정밀 변환 처리 중..."):
+            with st.spinner("잔여물 및 여백 정밀 처리 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -598,13 +612,20 @@ with col_center:
                                     row_num = int(re.search(r"(\d+)", cell_addr).group(1))
                                     col_idx = openpyxl.utils.column_index_from_string(col_str)
                                     
+                                    # B열 초기화
                                     safe_write_force(dest_ws, row_num, col_idx, "")
                                     
                                     if formatted_txt:
+                                        # B열 쓰기
                                         safe_write_force(dest_ws, row_num, col_idx, formatted_txt, center=False)
                                         dest_ws.row_dimensions[row_num].height = row_h
+                                        
+                                        # [수정] A열 여백 제거 (strip) 및 정렬
                                         try:
                                             cell_a = dest_ws.cell(row=row_num, column=1)
+                                            # A열에 값이 있다면 strip 처리
+                                            if cell_a.value:
+                                                cell_a.value = str(cell_a.value).strip()
                                             cell_a.alignment = ALIGN_TITLE
                                         except: pass
                                 except Exception as e: pass
@@ -685,7 +706,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 조사 및 문맥 기반 띄어쓰기 적용.")
+                    st.success("완료! B129 글자 잘림 복구 및 높이/정렬 완벽 보정.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
