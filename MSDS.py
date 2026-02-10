@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (이미지 로직 CFF 원복 & HP 로고컷)")
+st.title("MSDS 양식 변환기 (서버 최적화 & 최종 보정)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -27,11 +27,10 @@ ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [함수] 이미지 처리 (CFF 로직 동일)
+# [함수] 이미지 처리
 # --------------------------------------------------------------------------
 def normalize_image(pil_img):
     try:
-        # 투명 배경 처리 (흰색으로 병합)
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
             if pil_img.mode == 'P': pil_img = pil_img.convert('RGBA')
@@ -39,7 +38,6 @@ def normalize_image(pil_img):
             pil_img = background
         else:
             pil_img = pil_img.convert('RGB')
-        # 비교를 위해 32x32 그레이스케일로 리사이즈
         return pil_img.resize((32, 32)).convert('L')
     except:
         return pil_img.resize((32, 32)).convert('L')
@@ -69,19 +67,15 @@ def find_best_match_name(src_img, ref_images):
         for name, ref_img in ref_images.items():
             ref_norm = normalize_image(ref_img)
             ref_arr = np.array(ref_norm, dtype='int16')
-            # 픽셀 차이 계산 (MSE 방식)
             diff = np.mean(np.abs(src_arr - ref_arr))
             if diff < best_score:
                 best_score = diff
                 best_name = name
-        
-        # 유사도 임계값 (이 값보다 차이가 작아야 같은 그림으로 인정)
         if best_score < 65: return best_name
         else: return None
     except: return None
 
 def extract_number(filename):
-    # 파일명에서 숫자 추출 (정렬용)
     nums = re.findall(r'\d+', filename)
     return int(nums[0]) if nums else 999
 
@@ -114,6 +108,7 @@ def get_clustered_lines(doc):
             row_base_y = words[0][1]
             
             for w in words[1:]:
+                # CFF/HP 공통 8px
                 if abs(w[1] - row_base_y) < 8:
                     current_row.append(w)
                 else:
@@ -381,7 +376,8 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         
         if start_sig != -1 and end_sig != -1:
             target_area = full_text_hp[start_sig:end_sig]
-            m = re.search(r"[-•]\s*(위험|경고)", target_area)
+            # 위험, 경고 찾기 (특수문자 무시)
+            m = re.search(r"[-•\s]*(위험|경고)", target_area)
             if m:
                 result["signal_word"] = m.group(1)
                 signal_found = True
@@ -912,18 +908,25 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지] XML 오류 방지 & 화이트리스트 & 물리적 필터
+                            # [이미지] 메모리 최적화 + 화이트리스트
+                            # 상단 20% 로고는 HP(K) 모드에서만 필터링
+                            # GHS 그림만 Reference에서 가져와 삽입
+                            
                             collected_pil_images = []
-                            for page_index in range(len(doc)):
+                            # GHS 그림은 보통 앞쪽에 있으므로 2페이지까지만 스캔 (메모리 절약)
+                            scan_limit = min(2, len(doc))
+                            
+                            for page_index in range(scan_limit):
                                 image_list = doc.get_page_images(page_index)
                                 for img_info in image_list:
                                     xref = img_info[0]
+                                    
                                     # [HP] 1페이지 상단 20% 로고 제외
                                     if option == "HP(K)" and page_index == 0:
                                         try:
                                             page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
-                                            # 상단 20% (약 170pt) 이내면 로고로 간주하여 차단
+                                            # 상단 20% 이내면 로고로 간주하여 차단
                                             if rect.y1 < (page.rect.height * 0.20): continue
                                         except: continue
                                     
@@ -932,7 +935,7 @@ with col_center:
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         matched_name = None
                                         
-                                        # Reference 이미지가 있어야 비교 가능 (2차 검증)
+                                        # Reference 이미지가 있어야 비교 가능
                                         if loaded_refs:
                                             matched_name = find_best_match_name(pil_img, loaded_refs)
                                         
@@ -993,7 +996,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 이미지 원본 교체 & 신호어 복구 적용.")
+                    st.success("완료! 이미지 로직 CFF 원복 & HP 로고컷.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
