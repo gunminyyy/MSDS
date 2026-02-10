@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (위치 보정 & 잔여물 정밀 삭제)")
+st.title("MSDS 양식 변환기 (B542 정렬 & B513 정밀 타격)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -81,7 +81,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [핵심] 시각적 행 클러스터링 (보정됨)
+# [핵심] 시각적 행 클러스터링 (Y축 오차 범위 대폭 확대)
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
@@ -109,9 +109,8 @@ def get_clustered_lines(doc):
             row_base_y = words[0][1]
             
             for w in words[1:]:
-                # [수정] Y축 허용 오차를 8px -> 14px로 증가
-                # "아주 조금 위쪽"에 있는 글자도 같은 줄로 인식하게 함
-                if abs(w[1] - row_base_y) < 14:
+                # [수정] Y축 허용 오차 20px로 확대 (위로 솟은 글자 잡기 위해)
+                if abs(w[1] - row_base_y) < 20:
                     current_row.append(w)
                 else:
                     current_row.sort(key=lambda x: x[0])
@@ -207,7 +206,6 @@ def extract_section_smart(all_lines, start_kw, end_kw):
         "시 착용할 보호구 및 예방조치", "시 착용할 보호구",
         "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제",
         "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률",
-        # [추가] B521 잔여물 제거
         "에 의한 규제", "의한 규제"
     ]
     
@@ -593,7 +591,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("최종 완결 변환 중..."):
+            with st.spinner("B513 정밀 타격 및 잔여물 제거 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -752,7 +750,8 @@ with col_center:
                             safe_write_force(dest_ws, 512, 2, un_val, center=False)
                             
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip() # 괄호 제거
-                            safe_write_force(dest_ws, 515, 2, name_val, center=False)
+                            # [수정] B513에 적정선적명 기입 (사용자 요청)
+                            safe_write_force(dest_ws, 513, 2, name_val, center=False)
 
                             # [섹션 15] 법적규제 (위험물안전관리법)
                             s15 = parsed_data["sec15"]
@@ -760,7 +759,8 @@ with col_center:
 
                             # [날짜]
                             today_str = datetime.now().strftime("%Y.%m.%d")
-                            safe_write_force(dest_ws, 542, 2, today_str, center=True)
+                            # [수정] B542 왼쪽 정렬
+                            safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
                             # 이미지
                             target_anchor_row = 22
