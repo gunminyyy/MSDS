@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (HP B521 입력 제외 적용)")
+st.title("MSDS 양식 변환기 (XML 오류 복구 & CAS 분리)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -425,15 +425,19 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             conc = regex_conc.search(txt)
             if cas:
                 c_val = cas.group(1).replace(" ", "") 
-                txt_masked = txt[:cas.start()] + " " + txt[cas.end():]
+                
+                # [Fix] CAS 번호 제거 후 함유량 검색 (오인식 방지)
+                txt_no_cas = txt.replace(cas.group(0), " " * len(cas.group(0)))
+                
                 cn_val = ""
                 if conc:
                     s, e = conc.group(1), conc.group(2)
                     if s == "1": s = "0"
                     cn_val = f"{s} ~ {e}"
                         
-                elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt_masked):
-                    m = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_masked)
+                elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas):
+                    # CAS가 지워진 텍스트에서 숫자 검색
+                    m = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                     cn_val = m.group(1)
                 
                 if "." in cn_val: continue 
@@ -540,7 +544,11 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         if end_15 == -1: end_15 = len(all_lines)
         sec15_lines = all_lines[start_15:end_15]
     
-    danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", "마. 폐기물", mode)
+    if mode == "HP(K)":
+        danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", "마. 폐기물", mode)
+    else:
+        danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", "마. 폐기물", mode)
+        
     result["sec15"] = {"DANGER": danger_act}
 
     return result
@@ -876,7 +884,7 @@ with col_center:
 
                             # [섹션 15]
                             s15 = parsed_data["sec15"]
-                            # [Fix] HP(K)는 B521 건드리지 않음 (사용자 요청: 아무것도 넣지 말자)
+                            # [Fix] HP(K)는 B521 스킵, CFF(K)만 입력
                             if option == "CFF(K)":
                                 safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
 
@@ -886,14 +894,7 @@ with col_center:
 
                             # 이미지
                             target_anchor_row = 22
-                            if hasattr(dest_ws, '_images'):
-                                preserved_imgs = []
-                                for img in dest_ws._images:
-                                    try:
-                                        if not (target_anchor_row - 2 <= img.anchor._from.row <= target_anchor_row + 2):
-                                            preserved_imgs.append(img)
-                                    except: preserved_imgs.append(img)
-                                dest_ws._images = preserved_imgs
+                            # [Fix] 기존 이미지 삭제 로직 제거 (XML 손상 방지)
                             
                             collected_pil_images = []
                             for page_index in range(len(doc)):
