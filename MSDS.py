@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (서버 최적화 & 최종 보정)")
+st.title("MSDS 양식 변환기 (이미지 CFF동일화 & 지적사항 수정)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -376,8 +376,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         
         if start_sig != -1 and end_sig != -1:
             target_area = full_text_hp[start_sig:end_sig]
-            # 위험, 경고 찾기 (특수문자 무시)
-            m = re.search(r"[-•\s]*(위험|경고)", target_area)
+            m = re.search(r"[-•]\s*(위험|경고)", target_area)
             if m:
                 result["signal_word"] = m.group(1)
                 signal_found = True
@@ -908,25 +907,18 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지] 메모리 최적화 + 화이트리스트
-                            # 상단 20% 로고는 HP(K) 모드에서만 필터링
-                            # GHS 그림만 Reference에서 가져와 삽입
-                            
+                            # [이미지] XML 오류 방지 & 화이트리스트 & 물리적 필터
                             collected_pil_images = []
-                            # GHS 그림은 보통 앞쪽에 있으므로 2페이지까지만 스캔 (메모리 절약)
-                            scan_limit = min(2, len(doc))
-                            
-                            for page_index in range(scan_limit):
+                            for page_index in range(len(doc)):
                                 image_list = doc.get_page_images(page_index)
                                 for img_info in image_list:
                                     xref = img_info[0]
-                                    
                                     # [HP] 1페이지 상단 20% 로고 제외
                                     if option == "HP(K)" and page_index == 0:
                                         try:
                                             page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
-                                            # 상단 20% 이내면 로고로 간주하여 차단
+                                            # 상단 20% (약 170pt) 이내면 로고로 간주하여 차단
                                             if rect.y1 < (page.rect.height * 0.20): continue
                                         except: continue
                                     
