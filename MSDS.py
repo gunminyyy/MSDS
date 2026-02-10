@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (최종 마스터 버전)")
+st.title("MSDS 양식 변환기 (이미지 로직 CFF 원복 & HP 로고컷)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -27,10 +27,11 @@ ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [함수] 이미지 처리
+# [함수] 이미지 처리 (CFF 로직 동일)
 # --------------------------------------------------------------------------
 def normalize_image(pil_img):
     try:
+        # 투명 배경 처리 (흰색으로 병합)
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
             if pil_img.mode == 'P': pil_img = pil_img.convert('RGBA')
@@ -38,6 +39,7 @@ def normalize_image(pil_img):
             pil_img = background
         else:
             pil_img = pil_img.convert('RGB')
+        # 비교를 위해 32x32 그레이스케일로 리사이즈
         return pil_img.resize((32, 32)).convert('L')
     except:
         return pil_img.resize((32, 32)).convert('L')
@@ -67,15 +69,19 @@ def find_best_match_name(src_img, ref_images):
         for name, ref_img in ref_images.items():
             ref_norm = normalize_image(ref_img)
             ref_arr = np.array(ref_norm, dtype='int16')
+            # 픽셀 차이 계산 (MSE 방식)
             diff = np.mean(np.abs(src_arr - ref_arr))
             if diff < best_score:
                 best_score = diff
                 best_name = name
+        
+        # 유사도 임계값 (이 값보다 차이가 작아야 같은 그림으로 인정)
         if best_score < 65: return best_name
         else: return None
     except: return None
 
 def extract_number(filename):
+    # 파일명에서 숫자 추출 (정렬용)
     nums = re.findall(r'\d+', filename)
     return int(nums[0]) if nums else 999
 
@@ -282,7 +288,6 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             
             if ends_with_sentence or starts_with_bullet:
                 final_text += "\n" + curr_txt
-                
             else:
                 last_char = prev_txt[-1] if prev_txt else ""
                 first_char = curr_txt[0] if curr_txt else ""
@@ -368,7 +373,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     
     full_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
     
-    # [신호어 족집게 추출]
+    # [신호어 추출]
     signal_found = False
     try:
         start_sig = full_text_hp.find("신호어")
@@ -933,7 +938,7 @@ with col_center:
                                         
                                         # 화이트리스트: GHS 그림문자와 일치하는 것만 추가
                                         if matched_name:
-                                            # 원본 이미지 교체 (CFF 방식)
+                                            # [핵심] 원본 이미지 교체 (CFF 방식)
                                             clean_img = loaded_refs[matched_name]
                                             collected_pil_images.append((extract_number(matched_name), clean_img))
                                     except: continue
@@ -988,7 +993,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 그림문자 화이트리스트 & 신호어 복구 적용.")
+                    st.success("완료! 이미지 원본 교체 & 신호어 복구 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
