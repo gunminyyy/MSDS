@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (변수명 오류 수정 완료)")
+st.title("MSDS 양식 변환기 (HP B521 입력 제외 적용)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -411,7 +411,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P4"): result["p_stor"].append(code)
             elif p.startswith("P5"): result["p_disp"].append(code)
 
-    # [수정] 함유량 정규식 (소수점 인식용)
     regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
     regex_cas = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     
@@ -426,20 +425,18 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             conc = regex_conc.search(txt)
             if cas:
                 c_val = cas.group(1).replace(" ", "") 
+                txt_masked = txt[:cas.start()] + " " + txt[cas.end():]
                 cn_val = ""
                 if conc:
                     s, e = conc.group(1), conc.group(2)
-                    # [Fix] CFF, HP 모두 1->0 변환 적용
                     if s == "1": s = "0"
                     cn_val = f"{s} ~ {e}"
                         
-                elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt):
-                    m = re.search(r'\b(\d+(?:\.\d+)?)\b', txt)
+                elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt_masked):
+                    m = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_masked)
                     cn_val = m.group(1)
                 
-                # [Fix] 소수점 필터링 (점 있으면 아예 행 제외)
-                if "." in cn_val:
-                    continue 
+                if "." in cn_val: continue 
 
                 result["composition_data"].append((c_val, cn_val))
 
@@ -879,7 +876,9 @@ with col_center:
 
                             # [섹션 15]
                             s15 = parsed_data["sec15"]
-                            safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
+                            # [Fix] HP(K)는 B521 건드리지 않음 (사용자 요청: 아무것도 넣지 말자)
+                            if option == "CFF(K)":
+                                safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
 
                             # [날짜]
                             today_str = datetime.now().strftime("%Y.%m.%d")
@@ -905,7 +904,7 @@ with col_center:
                                         try:
                                             page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
-                                            if rect.y1 < (page.rect.height * 0.3): continue
+                                            if rect.y1 < (page.rect.height * 0.15): continue
                                         except: continue
                                     
                                     try:
@@ -968,7 +967,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! HP 1->0 변환 적용.")
+                    st.success("완료! HP B521 입력 제외 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
