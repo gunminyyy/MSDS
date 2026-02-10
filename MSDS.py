@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (HP 1->0 변환 적용)")
+st.title("MSDS 양식 변환기 (변수명 오류 수정 완료)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -429,10 +429,8 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 cn_val = ""
                 if conc:
                     s, e = conc.group(1), conc.group(2)
-                    
                     # [Fix] CFF, HP 모두 1->0 변환 적용
                     if s == "1": s = "0"
-                    
                     cn_val = f"{s} ~ {e}"
                         
                 elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt):
@@ -903,7 +901,7 @@ with col_center:
                                 image_list = doc.get_page_images(page_index)
                                 for img_info in image_list:
                                     xref = img_info[0]
-                                    if mode == "HP(K)" and page_index == 0:
+                                    if option == "HP(K)" and page_index == 0:
                                         try:
                                             page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
@@ -970,7 +968,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 소수점 함유량 제외 필터 적용.")
+                    st.success("완료! HP 1->0 변환 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
