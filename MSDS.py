@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (적정선적명 역방향 병합 & 확정)")
+st.title("MSDS 양식 변환기 (CFF/HP 듀얼 모드 지원)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -81,7 +81,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [핵심] 시각적 행 클러스터링 (복구됨: 8px)
+# [핵심] 시각적 행 클러스터링
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
@@ -109,7 +109,7 @@ def get_clustered_lines(doc):
             row_base_y = words[0][1]
             
             for w in words[1:]:
-                # [복구] 안전한 8px 기준
+                # CFF/HP 공통 8px
                 if abs(w[1] - row_base_y) < 8:
                     current_row.append(w)
                 else:
@@ -143,7 +143,7 @@ def get_clustered_lines(doc):
     return all_lines
 
 # --------------------------------------------------------------------------
-# [핵심] 섹션 추출
+# [핵심] 섹션 추출 (공통 엔진)
 # --------------------------------------------------------------------------
 def extract_section_smart(all_lines, start_kw, end_kw):
     start_idx = -1
@@ -194,6 +194,7 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     
     if not target_lines: return ""
     
+    # [꼬리 제거]
     garbage_heads = [
         "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
         "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
@@ -205,7 +206,7 @@ def extract_section_smart(all_lines, start_kw, end_kw):
         "시 착용할 보호구 및 예방조치", "시 착용할 보호구",
         "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제",
         "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률",
-        "에 의한 규제", "의한 규제"
+        "에 의한 규제", "의한 규제", "- 색" # HP용 추가
     ]
     
     sensitive_garbage_regex = [
@@ -289,31 +290,49 @@ def extract_section_smart(all_lines, start_kw, end_kw):
                 
     return final_text
 
+# [HP(K) 전용] 섹션 8 필터링 함수
+def parse_sec8_hp_content(text):
+    if not text: return "자료없음"
+    # 하이픈(-) 기준으로 문장 분리
+    lines = text.replace("\n", " ").split("-")
+    valid_lines = []
+    
+    for line in lines:
+        clean_line = line.strip()
+        if not clean_line: continue
+        
+        # "해당없음"이 있으면 스킵
+        if "해당없음" in clean_line: continue
+        
+        # 대괄호 제거
+        clean_line = clean_line.replace("[", "").replace("]", "").strip()
+        
+        if clean_line:
+            valid_lines.append(clean_line)
+            
+    if not valid_lines: return "자료없음"
+    return "\n- ".join(valid_lines) # 다시 하이픈으로 연결
+
 # --------------------------------------------------------------------------
-# [함수] 메인 파서
+# [함수] 메인 파서 (Dual Mode)
 # --------------------------------------------------------------------------
-def parse_pdf_final(doc):
+def parse_pdf_final(doc, mode="CFF(K)"):
     all_lines = get_clustered_lines(doc)
     
-    # [NEW] 적정선적명(B513) 전용 역방향 병합 로직
-    # "적정선적명" 라인보다 내용이 '위에' 있어서 인식을 못하는 경우,
-    # 해당 내용을 "적정선적명" 라인 뒤로 강제 이주(Migration) 시킴.
-    for i in range(len(all_lines)):
-        if "적정선적명" in all_lines[i]['text']:
-            target_line = all_lines[i]
-            
-            # 바로 윗줄 확인
-            if i > 0:
-                prev_line = all_lines[i-1]
-                # Y축 차이가 20px 이내라면 (같은 섹션일 확률 99%)
-                if abs(prev_line['global_y0'] - target_line['global_y0']) < 20:
-                    # 윗줄이 "나." 같은 제목이 아니라면 (내용이라면)
-                    if "적정선적명" not in prev_line['text'] and "유엔번호" not in prev_line['text']:
-                        # [핵심] 제목(target) + 내용(prev) 순서로 합체
-                        all_lines[i]['text'] = target_line['text'] + " " + prev_line['text']
-                        # 윗줄은 비움 (중복 방지)
-                        all_lines[i-1]['text'] = ""
+    # [CFF] 적정선적명 역방향 병합
+    if mode == "CFF(K)":
+        for i in range(len(all_lines)):
+            if "적정선적명" in all_lines[i]['text']:
+                target_line = all_lines[i]
+                if i > 0:
+                    prev_line = all_lines[i-1]
+                    if abs(prev_line['global_y0'] - target_line['global_y0']) < 20:
+                        if "적정선적명" not in prev_line['text'] and "유엔번호" not in prev_line['text']:
+                            all_lines[i]['text'] = target_line['text'] + " " + prev_line['text']
+                            all_lines[i-1]['text'] = ""
     
+    # [HP] 섹션 2 하이픈 기반 추출 준비 (생략 - 단순 추출 후 가공)
+
     result = {
         "hazard_cls": [], "signal_word": "", "h_codes": [], 
         "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
@@ -334,15 +353,38 @@ def parse_pdf_final(doc):
         elif line.strip() in ["위험", "경고"] and not result["signal_word"]:
             result["signal_word"] = line.strip()
     
-    lines_hp = full_text_hp.split('\n')
-    state = 0
-    for l in lines_hp:
-        l_ns = l.replace(" ", "")
-        if "가.유해성" in l_ns and "분류" in l_ns: state=1; continue
-        if "나.예방조치" in l_ns: state=0; continue
-        if state==1 and l.strip():
-            if "공급자" not in l and "회사명" not in l:
-                result["hazard_cls"].append(l.strip())
+    # [HP] 하이픈으로 문장 구분하여 유해성 분류 추출
+    if mode == "HP(K)":
+        lines_hp = full_text_hp.split('\n')
+        # HP는 하이픈을 제거해야 하므로
+        clean_lines = []
+        for l in lines_hp:
+            if l.strip().startswith("-"):
+                # 내용만 추출
+                clean_lines.append(l.strip()[1:].strip())
+            else:
+                clean_lines.append(l)
+        
+        # 여기서 유해성 분류 추출 (간소화: 기존 로직 활용하되 하이픈 제거)
+        state = 0
+        for l in lines_hp:
+            if "가. 유해성" in l: state=1; continue
+            if "나. 예방조치" in l: state=0; continue
+            if state==1 and l.strip():
+                if "공급자" not in l and "회사명" not in l:
+                    # 하이픈 제거
+                    result["hazard_cls"].append(l.replace("-", "").strip())
+    else:
+        # CFF
+        lines_hp = full_text_hp.split('\n')
+        state = 0
+        for l in lines_hp:
+            l_ns = l.replace(" ", "")
+            if "가.유해성" in l_ns and "분류" in l_ns: state=1; continue
+            if "나.예방조치" in l_ns: state=0; continue
+            if state==1 and l.strip():
+                if "공급자" not in l and "회사명" not in l:
+                    result["hazard_cls"].append(l.strip())
 
     regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
     all_matches = regex_code.findall(full_text_hp)
@@ -379,21 +421,36 @@ def parse_pdf_final(doc):
                     cn_val = f"{s} ~ {e}"
                 result["composition_data"].append((c_val, cn_val))
 
-    # 섹션 4~7
+    # 섹션 4~7 (모드 분기)
     data = {}
-    data["B125"] = extract_section_smart(all_lines, "나. 눈", "다. 피부")
-    data["B126"] = extract_section_smart(all_lines, "다. 피부", "라. 흡입")
-    data["B127"] = extract_section_smart(all_lines, "라. 흡입", "마. 먹었을")
-    data["B128"] = extract_section_smart(all_lines, "마. 먹었을", "바. 기타")
-    data["B129"] = extract_section_smart(all_lines, "바. 기타", ["5.", "폭발"])
-    data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질")
-    data["B133"] = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압")
-    data["B134"] = extract_section_smart(all_lines, "다. 화재진압", ["6.", "누출"])
+    if mode == "HP(K)":
+        data["B125"] = extract_section_smart(all_lines, "가. 눈에", "나. 피부")
+        data["B126"] = extract_section_smart(all_lines, "나. 피부", "다. 흡입")
+        data["B127"] = extract_section_smart(all_lines, "다. 흡입", "라. 먹었을")
+        data["B128"] = extract_section_smart(all_lines, "라. 먹었을", "마. 기타")
+        data["B129"] = extract_section_smart(all_lines, "마. 기타", ["5.", "폭발"])
+        data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질") # 소화제는 같음? "및 부적절한"으로 변경됨
+        # 정밀한 키워드 사용
+        data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질") # 헤더는 유연하게 찾음
+        data["B133"] = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압")
+        data["B134"] = extract_section_smart(all_lines, "다. 화재진압", ["6.", "누출"])
+    else: # CFF(K)
+        data["B125"] = extract_section_smart(all_lines, "나. 눈", "다. 피부")
+        data["B126"] = extract_section_smart(all_lines, "다. 피부", "라. 흡입")
+        data["B127"] = extract_section_smart(all_lines, "라. 흡입", "마. 먹었을")
+        data["B128"] = extract_section_smart(all_lines, "마. 먹었을", "바. 기타")
+        data["B129"] = extract_section_smart(all_lines, "바. 기타", ["5.", "폭발"])
+        data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질")
+        data["B133"] = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압")
+        data["B134"] = extract_section_smart(all_lines, "다. 화재진압", ["6.", "누출"])
+    
+    # 공통 부분
     data["B138"] = extract_section_smart(all_lines, "가. 인체를", "나. 환경을")
     data["B139"] = extract_section_smart(all_lines, "나. 환경을", "다. 정화")
     data["B140"] = extract_section_smart(all_lines, "다. 정화", ["7.", "취급"])
     data["B143"] = extract_section_smart(all_lines, "가. 안전취급", "나. 안전한")
     data["B144"] = extract_section_smart(all_lines, "나. 안전한", ["8.", "노출"])
+    
     result["sec4_to_7"] = data
 
     # [섹션 8]
@@ -405,8 +462,17 @@ def parse_pdf_final(doc):
     if start_8 != -1:
         if end_8 == -1: end_8 = len(all_lines)
         sec8_lines = all_lines[start_8:end_8]
-    b148_raw = extract_section_smart(sec8_lines, "국내규정", "ACGIH")
-    b150_raw = extract_section_smart(sec8_lines, "ACGIH", "생물학적")
+    
+    if mode == "HP(K)":
+        b148_raw = extract_section_smart(sec8_lines, "국내노출기준", "ACGIH노출기준")
+        b150_raw = extract_section_smart(sec8_lines, "ACGIH노출기준", "생물학적")
+        # 정밀 필터링 적용 (해당없음 제거 등)
+        b148_raw = parse_sec8_hp_content(b148_raw)
+        b150_raw = parse_sec8_hp_content(b150_raw)
+    else:
+        b148_raw = extract_section_smart(sec8_lines, "국내규정", "ACGIH")
+        b150_raw = extract_section_smart(sec8_lines, "ACGIH", "생물학적")
+        
     result["sec8"] = {"B148": b148_raw, "B150": b150_raw}
 
     # [섹션 9]
@@ -418,12 +484,22 @@ def parse_pdf_final(doc):
     if start_9 != -1:
         if end_9 == -1: end_9 = len(all_lines)
         sec9_lines = all_lines[start_9:end_9]
-    result["sec9"] = {
-        "B163": extract_section_smart(sec9_lines, "색상", "나. 냄새"),
-        "B169": extract_section_smart(sec9_lines, "인화점", "아. 증발속도"),
-        "B176": extract_section_smart(sec9_lines, "비중", "거. n-옥탄올"),
-        "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"])
-    }
+        
+    if mode == "HP(K)":
+        # 색상 -> "- 색"
+        result["sec9"] = {
+            "B163": extract_section_smart(sec9_lines, "- 색", "나. 냄새"),
+            "B169": extract_section_smart(sec9_lines, "인화점", "아. 증발속도"),
+            "B176": extract_section_smart(sec9_lines, "비중", "거. n-옥탄올"),
+            "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"])
+        }
+    else:
+        result["sec9"] = {
+            "B163": extract_section_smart(sec9_lines, "색상", "나. 냄새"),
+            "B169": extract_section_smart(sec9_lines, "인화점", "아. 증발속도"),
+            "B176": extract_section_smart(sec9_lines, "비중", "거. n-옥탄올"),
+            "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"])
+        }
 
     # [섹션 14] 운송
     sec14_lines = []
@@ -435,8 +511,13 @@ def parse_pdf_final(doc):
         if end_14 == -1: end_14 = len(all_lines)
         sec14_lines = all_lines[start_14:end_14]
     
-    un_no = extract_section_smart(sec14_lines, "유엔번호", "나. 적정선적명")
-    ship_name = extract_section_smart(sec14_lines, "적정선적명", ["다. 운송에서의", "다.운송에서의"])
+    if mode == "HP(K)":
+        un_no = extract_section_smart(sec14_lines, "유엔번호", "나. 유엔")
+        ship_name = extract_section_smart(sec14_lines, "유엔 적정 선적명", ["다. 운송에서의", "다.운송에서의"])
+    else:
+        un_no = extract_section_smart(sec14_lines, "유엔번호", "나. 적정선적명")
+        ship_name = extract_section_smart(sec14_lines, "적정선적명", ["다. 운송에서의", "다.운송에서의"])
+        
     result["sec14"] = {"UN": un_no, "NAME": ship_name}
 
     # [섹션 15] 법적규제
@@ -587,7 +668,7 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
             st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
     with col2:
-        template_file = st.file_uploader("2. 양식 파일 (통합 양식 GHS MSDS(K).xlsx)", type="xlsx")
+        template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
 
 product_name_input = st.text_input("제품명 입력 (B7, B10)")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
@@ -609,7 +690,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("B513 역방향 병합 및 최종 확정 중..."):
+            with st.spinner(f"{option} 모드로 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -656,15 +737,16 @@ with col_center:
                     st.error(f"데이터 로드 오류: {e}")
 
                 for uploaded_file in uploaded_files:
-                    if option == "CFF(K)":
+                    if option in ["CFF(K)", "HP(K)"]:
                         try:
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                            parsed_data = parse_pdf_final(doc)
+                            parsed_data = parse_pdf_final(doc, mode=option)
                             
                             template_file.seek(0)
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
                             dest_ws = dest_wb.active
 
+                            # 초기화
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
@@ -674,6 +756,7 @@ with col_center:
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
                             safe_write_force(dest_ws, 10, 2, product_name_input, center=True)
                             
+                            # 유해성 분류
                             if parsed_data["hazard_cls"]:
                                 clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
                                 safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
@@ -681,6 +764,13 @@ with col_center:
 
                             signal_final = parsed_data["signal_word"] if parsed_data["signal_word"] else ""
                             safe_write_force(dest_ws, 24, 2, signal_final, center=False) 
+
+                            # P코드 (HP일 경우 예방/대응/저장/폐기 넘버링)
+                            if option == "HP(K)":
+                                safe_write_force(dest_ws, 38, 1, "1) 예방", center=True)
+                                safe_write_force(dest_ws, 50, 1, "2) 대응", center=True)
+                                safe_write_force(dest_ws, 64, 1, "3) 저장", center=True)
+                                safe_write_force(dest_ws, 70, 1, "4) 폐기", center=True)
 
                             fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map)
                             fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
@@ -718,7 +808,7 @@ with col_center:
                                         except: pass
                                 except Exception as e: pass
 
-                            # [섹션 8/9]
+                            # [섹션 8]
                             s8 = parsed_data["sec8"]
                             val148 = s8["B148"].replace("해당없음", "자료없음")
                             lines148 = [l.strip() for l in val148.split('\n') if l.strip()]
@@ -733,10 +823,19 @@ with col_center:
                             val150 = re.sub(r"^규정[:\s]*", "", val150).strip()
                             safe_write_force(dest_ws, 150, 2, val150, center=False)
 
+                            # [섹션 9]
                             s9 = parsed_data["sec9"]
                             safe_write_force(dest_ws, 163, 2, s9["B163"], center=False)
-                            flash_num = re.findall(r'(\d{2,3})', s9["B169"])
-                            safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
+                            
+                            # HP는 부등호 포함, CFF는 숫자만
+                            if option == "HP(K)":
+                                flash = s9["B169"]
+                                flash_num = re.findall(r'([<>]?\s*\d{2,3})', flash)
+                                safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
+                            else:
+                                flash = s9["B169"]
+                                flash_num = re.findall(r'(\d{2,3})', flash)
+                                safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
                             
                             gravity = s9["B176"].replace("(20℃)", "").replace("(물=1)", "")
                             g_match = re.search(r'([\d\.]+)', gravity)
@@ -746,7 +845,7 @@ with col_center:
                             r_match = re.search(r'([\d\.]+)', refract)
                             safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
-                            # [섹션 11~15 중앙 데이터 매핑]
+                            # [섹션 11~15]
                             fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F')
                             fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G')
                             fill_regulatory_section(dest_ws, 269, 300, active_substances, kor_data_map, 'H')
@@ -756,28 +855,25 @@ with col_center:
                             fill_regulatory_section(dest_ws, 428, 460, active_substances, kor_data_map, 'U')
                             fill_regulatory_section(dest_ws, 465, 497, active_substances, kor_data_map, 'V')
 
-                            # [행 숨김]
                             for r in range(261, 268): dest_ws.row_dimensions[r].hidden = True
                             for r in range(349, 352): dest_ws.row_dimensions[r].hidden = True
                             dest_ws.row_dimensions[386].hidden = True
                             for r in range(461, 464): dest_ws.row_dimensions[r].hidden = True
 
-                            # [섹션 14] 운송
+                            # [섹션 14]
                             s14 = parsed_data["sec14"]
-                            un_val = re.sub(r"\D", "", s14["UN"]) # 숫자만
+                            un_val = re.sub(r"\D", "", s14["UN"])
                             safe_write_force(dest_ws, 512, 2, un_val, center=False)
                             
-                            name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip() # 괄호 제거
-                            # [수정] B513에 적정선적명 기입 (역방향 병합 효과)
+                            name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
 
-                            # [섹션 15] 법적규제 (위험물안전관리법)
+                            # [섹션 15]
                             s15 = parsed_data["sec15"]
                             safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
 
                             # [날짜]
                             today_str = datetime.now().strftime("%Y.%m.%d")
-                            # [수정] 왼쪽 정렬
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
                             # 이미지
@@ -856,7 +952,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 적정선적명 정밀 복원 및 B542 정렬 적용.")
+                    st.success("완료! CFF/HP 모드별 정밀 변환 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
