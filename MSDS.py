@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (B542 정렬 & B513 정밀 타격)")
+st.title("MSDS 양식 변환기 (적정선적명 역방향 병합 & 확정)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -81,7 +81,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [핵심] 시각적 행 클러스터링 (Y축 오차 범위 대폭 확대)
+# [핵심] 시각적 행 클러스터링 (복구됨: 8px)
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
@@ -109,8 +109,8 @@ def get_clustered_lines(doc):
             row_base_y = words[0][1]
             
             for w in words[1:]:
-                # [수정] Y축 허용 오차 20px로 확대 (위로 솟은 글자 잡기 위해)
-                if abs(w[1] - row_base_y) < 20:
+                # [복구] 안전한 8px 기준
+                if abs(w[1] - row_base_y) < 8:
                     current_row.append(w)
                 else:
                     current_row.sort(key=lambda x: x[0])
@@ -194,7 +194,6 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     
     if not target_lines: return ""
     
-    # [꼬리 제거 목록]
     garbage_heads = [
         "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
         "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
@@ -295,6 +294,25 @@ def extract_section_smart(all_lines, start_kw, end_kw):
 # --------------------------------------------------------------------------
 def parse_pdf_final(doc):
     all_lines = get_clustered_lines(doc)
+    
+    # [NEW] 적정선적명(B513) 전용 역방향 병합 로직
+    # "적정선적명" 라인보다 내용이 '위에' 있어서 인식을 못하는 경우,
+    # 해당 내용을 "적정선적명" 라인 뒤로 강제 이주(Migration) 시킴.
+    for i in range(len(all_lines)):
+        if "적정선적명" in all_lines[i]['text']:
+            target_line = all_lines[i]
+            
+            # 바로 윗줄 확인
+            if i > 0:
+                prev_line = all_lines[i-1]
+                # Y축 차이가 20px 이내라면 (같은 섹션일 확률 99%)
+                if abs(prev_line['global_y0'] - target_line['global_y0']) < 20:
+                    # 윗줄이 "나." 같은 제목이 아니라면 (내용이라면)
+                    if "적정선적명" not in prev_line['text'] and "유엔번호" not in prev_line['text']:
+                        # [핵심] 제목(target) + 내용(prev) 순서로 합체
+                        all_lines[i]['text'] = target_line['text'] + " " + prev_line['text']
+                        # 윗줄은 비움 (중복 방지)
+                        all_lines[i-1]['text'] = ""
     
     result = {
         "hazard_cls": [], "signal_word": "", "h_codes": [], 
@@ -591,7 +609,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("B513 정밀 타격 및 잔여물 제거 중..."):
+            with st.spinner("B513 역방향 병합 및 최종 확정 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -750,7 +768,7 @@ with col_center:
                             safe_write_force(dest_ws, 512, 2, un_val, center=False)
                             
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip() # 괄호 제거
-                            # [수정] B513에 적정선적명 기입 (사용자 요청)
+                            # [수정] B513에 적정선적명 기입 (역방향 병합 효과)
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
 
                             # [섹션 15] 법적규제 (위험물안전관리법)
@@ -759,7 +777,7 @@ with col_center:
 
                             # [날짜]
                             today_str = datetime.now().strftime("%Y.%m.%d")
-                            # [수정] B542 왼쪽 정렬
+                            # [수정] 왼쪽 정렬
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
                             # 이미지
@@ -838,7 +856,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 최종 확정 변환.")
+                    st.success("완료! 적정선적명 정밀 복원 및 B542 정렬 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
