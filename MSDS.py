@@ -15,7 +15,7 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (수치 오류 정밀 수정판)")
+st.title("MSDS 양식 변환기 (인화점 단위 붙임 & 확정)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -147,22 +147,17 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     start_idx = -1
     end_idx = -1
     
-    # 1. 시작점 찾기 (공백 무시)
-    clean_start_kw = start_kw.replace(" ", "")
     for i, line in enumerate(all_lines):
-        if clean_start_kw in line['text'].replace(" ", ""):
+        if start_kw in line['text']:
             start_idx = i
             break
     if start_idx == -1: return ""
     
-    # 2. 종료점 찾기
     if isinstance(end_kw, str): end_kw = [end_kw]
-    clean_end_kws = [k.replace(" ", "") for k in end_kw]
-    
     for i in range(start_idx + 1, len(all_lines)):
-        line_clean = all_lines[i]['text'].replace(" ", "")
-        for cek in clean_end_kws:
-            if cek in line_clean:
+        line_text = all_lines[i]['text']
+        for ek in end_kw:
+            if ek in line_text:
                 end_idx = i; break
         if end_idx != -1: break
     if end_idx == -1: end_idx = len(all_lines)
@@ -170,21 +165,14 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     target_lines_raw = all_lines[start_idx : end_idx]
     if not target_lines_raw: return ""
     
-    # 3. 첫 줄 제목 제거
     first_line = target_lines_raw[0].copy()
     txt = first_line['text']
-    escaped_kw = re.escape(start_kw)
-    pattern_str = escaped_kw.replace(r"\ ", r"\s*")
-    
-    match = re.search(pattern_str, txt)
-    if match:
-        content_part = txt[match.end():].strip()
-        content_part = re.sub(r"^[:\.\-\s]+", "", content_part)
-        first_line['text'] = content_part
-    else:
-        if start_kw in txt:
-            parts = txt.split(start_kw, 1)
-            first_line['text'] = parts[1].strip() if len(parts) > 1 else ""
+    if start_kw in txt:
+        parts = txt.split(start_kw, 1)
+        if len(parts) > 1:
+            content_part = parts[1].strip()
+            content_part = re.sub(r"^[:\.\-\s]+", "", content_part)
+            first_line['text'] = content_part
         else:
             first_line['text'] = ""
     
@@ -668,7 +656,8 @@ with col_center:
                             flash = s9["B169"]
                             flash_num = re.findall(r'(\d{2,3})', flash)
                             if flash_num:
-                                safe_write_force(dest_ws, 169, 2, f"{flash_num[0]} ℃", center=False)
+                                # [수정] 공백 제거
+                                safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃", center=False)
                             else:
                                 safe_write_force(dest_ws, 169, 2, "", center=False)
                                 
@@ -769,7 +758,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 인화점 단위, 규정 삭제, 비중/굴절률 수치 정밀 보정.")
+                    st.success("완료! 인화점 단위 붙임 및 모든 정밀 보정 완료.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
