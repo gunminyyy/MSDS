@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (XML 오류 복구 & CAS 분리)")
+st.title("MSDS 양식 변환기 (HP CAS/함유량 분리 & 로고 정밀제거)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -411,8 +411,8 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P4"): result["p_stor"].append(code)
             elif p.startswith("P5"): result["p_disp"].append(code)
 
-    regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
-    regex_cas = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
+    # [수정] CAS 정규식 (3단 숫자, 하이픈 포함)
+    regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     
     in_comp = False
     for line in all_lines:
@@ -421,27 +421,37 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         if "4." in txt and ("응급" in txt or "First" in txt): in_comp=False; break
         if in_comp:
             if re.search(r'^\d+\.\d+', txt): continue 
-            cas = regex_cas.search(txt)
-            conc = regex_conc.search(txt)
-            if cas:
-                c_val = cas.group(1).replace(" ", "") 
+            
+            # 1. CAS 번호 추출
+            cas_found = regex_cas_strict.findall(txt)
+            if cas_found:
+                c_val = cas_found[0].replace(" ", "")
                 
-                # [Fix] CAS 번호 제거 후 함유량 검색 (오인식 방지)
-                txt_no_cas = txt.replace(cas.group(0), " " * len(cas.group(0)))
+                # 2. 텍스트에서 CAS 번호 삭제 (공백으로 치환)
+                txt_clean = txt.replace(cas_found[0], " " * len(cas_found[0]))
                 
+                # 3. 남은 텍스트에서 함유량 추출
                 cn_val = ""
-                if conc:
-                    s, e = conc.group(1), conc.group(2)
+                # 함유량: "숫자 - 숫자" 또는 "숫자 ~ 숫자"
+                m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_clean)
+                
+                if m_range:
+                    s, e = m_range.group(1), m_range.group(2)
                     if s == "1": s = "0"
                     cn_val = f"{s} ~ {e}"
-                        
-                elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas):
-                    # CAS가 지워진 텍스트에서 숫자 검색
-                    m = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
-                    cn_val = m.group(1)
+                else:
+                    # 함유량: 단일 숫자 (CAS 번호는 이미 지워짐)
+                    m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_clean)
+                    if m_single:
+                        # 오인 방지를 위한 간단한 값 체크 (100 이하)
+                        try:
+                            if float(m_single.group(1)) <= 100:
+                                cn_val = m_single.group(1)
+                        except: pass
                 
-                if "." in cn_val: continue 
-
+                # 4. 소수점 필터링
+                if "." in cn_val: continue
+                
                 result["composition_data"].append((c_val, cn_val))
 
     # 섹션 4~7
@@ -545,7 +555,8 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         sec15_lines = all_lines[start_15:end_15]
     
     if mode == "HP(K)":
-        danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", "마. 폐기물", mode)
+        # [Fix] HP(K)는 B521 건드리지 않음 (Skip)
+        danger_act = ""
     else:
         danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", "마. 폐기물", mode)
         
@@ -761,11 +772,14 @@ with col_center:
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
                             dest_ws = dest_wb.active
 
-                            # 초기화
+                            # 초기화 (수식 삭제)
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
-                                    if cell.data_type == 'f' and "ingredients" in str(cell.value):
+                                    # [XML 오류 방지] 수식 삭제는 매우 신중하게 처리
+                                    # 사용자 요청: "양식의 B열에는 수식이 걸려 있으므로 먼저 제거"
+                                    # 따라서 B열(col=2)만 타겟팅
+                                    if cell.column == 2 and cell.data_type == 'f':
                                         cell.value = ""
 
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
@@ -892,19 +906,20 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # 이미지
-                            target_anchor_row = 22
-                            # [Fix] 기존 이미지 삭제 로직 제거 (XML 손상 방지)
+                            # [이미지] XML 오류 방지
+                            # 기존 양식의 이미지 리스트는 절대 건드리지 않음 (_images 조작 삭제)
                             
                             collected_pil_images = []
                             for page_index in range(len(doc)):
                                 image_list = doc.get_page_images(page_index)
                                 for img_info in image_list:
                                     xref = img_info[0]
+                                    # [HP] 1페이지 상단 15% 로고만 제외
                                     if option == "HP(K)" and page_index == 0:
                                         try:
                                             page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
+                                            # 상단 15% (약 120pt) 이내면 로고로 간주
                                             if rect.y1 < (page.rect.height * 0.15): continue
                                         except: continue
                                     
@@ -941,6 +956,7 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG') 
                                 img_byte_arr.seek(0)
+                                # 안전하게 이미지 추가 (기존꺼 삭제 안함)
                                 dest_ws.add_image(XLImage(img_byte_arr), 'B23')
 
                             output = io.BytesIO()
@@ -968,7 +984,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! HP B521 입력 제외 적용.")
+                    st.success("완료! XML 복구 및 CAS 분리 패치.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
