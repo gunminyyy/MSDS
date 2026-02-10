@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (운송/규제/날짜 추가 완료)")
+st.title("MSDS 양식 변환기 (위치 보정 & 잔여물 정밀 삭제)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -81,7 +81,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [핵심] 시각적 행 클러스터링
+# [핵심] 시각적 행 클러스터링 (보정됨)
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
@@ -109,7 +109,9 @@ def get_clustered_lines(doc):
             row_base_y = words[0][1]
             
             for w in words[1:]:
-                if abs(w[1] - row_base_y) < 8:
+                # [수정] Y축 허용 오차를 8px -> 14px로 증가
+                # "아주 조금 위쪽"에 있는 글자도 같은 줄로 인식하게 함
+                if abs(w[1] - row_base_y) < 14:
                     current_row.append(w)
                 else:
                     current_row.sort(key=lambda x: x[0])
@@ -193,6 +195,7 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     
     if not target_lines: return ""
     
+    # [꼬리 제거 목록]
     garbage_heads = [
         "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
         "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
@@ -203,7 +206,9 @@ def extract_section_smart(all_lines, start_kw, end_kw):
         "보호하기 위해 필요한 조치사항", "또는 제거 방법", 
         "시 착용할 보호구 및 예방조치", "시 착용할 보호구",
         "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제",
-        "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률"
+        "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률",
+        # [추가] B521 잔여물 제거
+        "에 의한 규제", "의한 규제"
     ]
     
     sensitive_garbage_regex = [
@@ -288,7 +293,7 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     return final_text
 
 # --------------------------------------------------------------------------
-# [함수] 메인 파서 (섹션 14, 15 추가)
+# [함수] 메인 파서
 # --------------------------------------------------------------------------
 def parse_pdf_final(doc):
     all_lines = get_clustered_lines(doc)
@@ -588,7 +593,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("운송/규제/날짜 추가 및 통합 변환 중..."):
+            with st.spinner("최종 완결 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -833,7 +838,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 운송/규제/날짜 포함 모든 로직 적용.")
+                    st.success("완료! 최종 확정 변환.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
