@@ -15,7 +15,7 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (최종 검토 완료 & 확정)")
+st.title("MSDS 양식 변환기 (섹션 8/9 추가 & 정밀 포맷팅)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -147,17 +147,22 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     start_idx = -1
     end_idx = -1
     
+    # 1. 시작점 찾기 (공백 무시)
+    clean_start_kw = start_kw.replace(" ", "")
     for i, line in enumerate(all_lines):
-        if start_kw in line['text']:
+        if clean_start_kw in line['text'].replace(" ", ""):
             start_idx = i
             break
     if start_idx == -1: return ""
     
+    # 2. 종료점 찾기
     if isinstance(end_kw, str): end_kw = [end_kw]
+    clean_end_kws = [k.replace(" ", "") for k in end_kw]
+    
     for i in range(start_idx + 1, len(all_lines)):
-        line_text = all_lines[i]['text']
-        for ek in end_kw:
-            if ek in line_text:
+        line_clean = all_lines[i]['text'].replace(" ", "")
+        for cek in clean_end_kws:
+            if cek in line_clean:
                 end_idx = i; break
         if end_idx != -1: break
     if end_idx == -1: end_idx = len(all_lines)
@@ -165,14 +170,21 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     target_lines_raw = all_lines[start_idx : end_idx]
     if not target_lines_raw: return ""
     
+    # 3. 첫 줄 제목 제거
     first_line = target_lines_raw[0].copy()
     txt = first_line['text']
-    if start_kw in txt:
-        parts = txt.split(start_kw, 1)
-        if len(parts) > 1:
-            content_part = parts[1].strip()
-            content_part = re.sub(r"^[:\.\-\s]+", "", content_part)
-            first_line['text'] = content_part
+    escaped_kw = re.escape(start_kw)
+    pattern_str = escaped_kw.replace(r"\ ", r"\s*")
+    
+    match = re.search(pattern_str, txt)
+    if match:
+        content_part = txt[match.end():].strip()
+        content_part = re.sub(r"^[:\.\-\s]+", "", content_part)
+        first_line['text'] = content_part
+    else:
+        if start_kw in txt:
+            parts = txt.split(start_kw, 1)
+            first_line['text'] = parts[1].strip() if len(parts) > 1 else ""
         else:
             first_line['text'] = ""
     
@@ -183,21 +195,24 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     
     if not target_lines: return ""
     
-    # [1] 꼬리 제거 목록 (B129 '의사의 주의사항' 추가)
+    # [꼬리 제거 목록]
     garbage_heads = [
         "에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", 
         "흡입했을 때", "먹었을 때", "주의사항", "내용물", 
         "취급요령", "저장방법", "보호구", "조치사항", "제거 방법",
         "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치",
-        "방법", "경고표지 항목", "그림문자", "화학물질",
+        "방법", "경고표지 항목", "그림문자", "화학물질", 
+        "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보",
         "보호하기 위해 필요한 조치사항", "또는 제거 방법", 
         "시 착용할 보호구 및 예방조치", "시 착용할 보호구",
-        "부터 생기는 특정 유해성", "(부적절한) 소화제",
-        "의사의 주의사항", "기타 의사의 주의사항", # [추가] B129 헤더 제거
-        "사의 주의사항", # 혹시 '의'가 잘린 경우 대비
-        "및", "요령", "때", "항의", "시", "또는"
+        "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제",
+        "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률"
     ]
     
+    sensitive_garbage_regex = [
+        r"^시\s+", r"^또는\s+", r"^의\s+"
+    ]
+
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
@@ -213,6 +228,13 @@ def extract_section_smart(all_lines, start_kw, end_kw):
                     if m:
                         txt = txt[m.end():].strip()
                         changed = True
+            
+            for pat in sensitive_garbage_regex:
+                m = re.search(pat, txt)
+                if m:
+                    txt = txt[m.end():].strip()
+                    changed = True
+
             txt = re.sub(r"^[:\.\)\s]+", "", txt)
             if not changed: break
         
@@ -269,7 +291,7 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     return final_text
 
 # --------------------------------------------------------------------------
-# [함수] 메인 파서
+# [함수] 메인 파서 (섹션 8, 9 추가)
 # --------------------------------------------------------------------------
 def parse_pdf_final(doc):
     all_lines = get_clustered_lines(doc)
@@ -277,14 +299,14 @@ def parse_pdf_final(doc):
     result = {
         "hazard_cls": [], "signal_word": "", "h_codes": [], 
         "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
-        "composition_data": [], "sec4_to_7": {} 
+        "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}
     }
 
+    # H/P, 신호어 등 (기존)
     limit_y = 999999
     for line in all_lines:
         if "3. 구성성분" in line['text'] or "3. 성분" in line['text']:
             limit_y = line['global_y0']; break
-            
     full_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
     
     for line in full_text_hp.split('\n'):
@@ -339,6 +361,7 @@ def parse_pdf_final(doc):
                     cn_val = f"{s} ~ {e}"
                 result["composition_data"].append((c_val, cn_val))
 
+    # 섹션 4~7
     data = {}
     data["B125"] = extract_section_smart(all_lines, "나. 눈", "다. 피부")
     data["B126"] = extract_section_smart(all_lines, "다. 피부", "라. 흡입")
@@ -353,8 +376,52 @@ def parse_pdf_final(doc):
     data["B140"] = extract_section_smart(all_lines, "다. 정화", ["7.", "취급"])
     data["B143"] = extract_section_smart(all_lines, "가. 안전취급", "나. 안전한")
     data["B144"] = extract_section_smart(all_lines, "나. 안전한", ["8.", "노출"])
-    
     result["sec4_to_7"] = data
+
+    # [섹션 8 추출]
+    sec8_text = extract_section_smart(all_lines, "8. 노출방지", "9. 물리화학")
+    # 임시 변수에 저장 후 내부 파싱
+    # 텍스트 전체에서 키워드 찾아서 분리
+    # B148/149: "국내규정" ~ "ACGIH 규정"
+    # B150: "ACGIH 규정" ~ "생물학적"
+    # 편의상 extract_section_smart를 재사용하기엔 all_lines 범위가 안맞음.
+    # all_lines 전체에서 "8."과 "9." 사이를 찾고, 그 안에서 세부 파싱.
+    
+    # 8번 섹션 전체 라인
+    sec8_lines = []
+    start_8 = -1; end_8 = -1
+    for i, line in enumerate(all_lines):
+        if "8. 노출방지" in line['text']: start_8 = i
+        if "9. 물리화학" in line['text']: end_8 = i; break
+    if start_8 != -1:
+        if end_8 == -1: end_8 = len(all_lines)
+        # 섹션 8 내부 라인들
+        sec8_lines = all_lines[start_8:end_8]
+    
+    # B148_149
+    b148_raw = extract_section_smart(sec8_lines, "국내규정", "ACGIH")
+    # B150
+    b150_raw = extract_section_smart(sec8_lines, "ACGIH", "생물학적")
+    
+    result["sec8"] = {"B148": b148_raw, "B150": b150_raw}
+
+    # [섹션 9 추출]
+    sec9_lines = []
+    start_9 = -1; end_9 = -1
+    for i, line in enumerate(all_lines):
+        if "9. 물리화학" in line['text']: start_9 = i
+        if "10. 안정성" in line['text']: end_9 = i; break
+    if start_9 != -1:
+        if end_9 == -1: end_9 = len(all_lines)
+        sec9_lines = all_lines[start_9:end_9]
+        
+    result["sec9"] = {
+        "B163": extract_section_smart(sec9_lines, "색상", "나. 냄새"),
+        "B169": extract_section_smart(sec9_lines, "인화점", "아. 증발속도"),
+        "B176": extract_section_smart(sec9_lines, "비중", "거. n-옥탄올"),
+        "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"])
+    }
+
     return result
 
 # --------------------------------------------------------------------------
@@ -390,14 +457,7 @@ def safe_write_force(ws, row, col, value, center=False):
 def calculate_smart_height_basic(text): 
     if not text: return 19.2
     explicit_lines = str(text).count('\n') + 1
-    estimated_width_bytes = 72 
-    current_bytes = 0; wrapped_lines = 1
-    for char in str(text):
-        if char == '\n': current_bytes = 0; wrapped_lines += 1; continue
-        if '가' <= char <= '힣': current_bytes += 2
-        else: current_bytes += 1
-        if current_bytes >= estimated_width_bytes: wrapped_lines += 1; current_bytes = 0 
-    final_lines = max(explicit_lines, wrapped_lines)
+    final_lines = max(explicit_lines, 1)
     if final_lines == 1: return 19.2
     elif final_lines == 2: return 23.3
     else: return 33.0
@@ -410,17 +470,14 @@ def format_and_calc_height_sec47(text):
     final_text = "\n".join(lines)
     
     char_limit_per_line = 45
-    
     total_visual_lines = 0
     for line in lines:
         line_len = 0
         for ch in line:
             line_len += 2 if '가' <= ch <= '힣' else 1.1 
-        
         visual_lines = math.ceil(line_len / (char_limit_per_line * 2)) 
         if visual_lines == 0: visual_lines = 1
         total_visual_lines += visual_lines
-    
     if total_visual_lines == 0: total_visual_lines = 1
     
     height = (total_visual_lines * 10) + 10
@@ -500,7 +557,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("최종 확정 변환 중..."):
+            with st.spinner("섹션 8, 9 추가 및 정밀 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -586,17 +643,70 @@ with col_center:
                                     col_idx = openpyxl.utils.column_index_from_string(col_str)
                                     
                                     safe_write_force(dest_ws, row_num, col_idx, "")
-                                    
                                     if formatted_txt:
                                         safe_write_force(dest_ws, row_num, col_idx, formatted_txt, center=False)
                                         dest_ws.row_dimensions[row_num].height = row_h
                                         try:
                                             cell_a = dest_ws.cell(row=row_num, column=1)
-                                            if cell_a.value:
-                                                cell_a.value = str(cell_a.value).strip()
+                                            if cell_a.value: cell_a.value = str(cell_a.value).strip()
                                             cell_a.alignment = ALIGN_TITLE
                                         except: pass
                                 except Exception as e: pass
+
+                            # [섹션 8 처리]
+                            s8 = parsed_data["sec8"]
+                            # B148/149
+                            val148 = s8["B148"].replace("해당없음", "자료없음")
+                            lines148 = [l.strip() for l in val148.split('\n') if l.strip()]
+                            
+                            safe_write_force(dest_ws, 148, 2, "")
+                            safe_write_force(dest_ws, 149, 2, "")
+                            dest_ws.row_dimensions[149].hidden = True
+                            
+                            if lines148:
+                                # 첫 줄 B148
+                                safe_write_force(dest_ws, 148, 2, lines148[0], center=False)
+                                if len(lines148) > 1:
+                                    # 나머지 줄 B149
+                                    rest_text = "\n".join(lines148[1:])
+                                    safe_write_force(dest_ws, 149, 2, rest_text, center=False)
+                                    dest_ws.row_dimensions[149].hidden = False
+                                    
+                            # B150
+                            val150 = s8["B150"].replace("해당없음", "자료없음")
+                            safe_write_force(dest_ws, 150, 2, val150, center=False)
+
+                            # [섹션 9 처리]
+                            s9 = parsed_data["sec9"]
+                            # B163
+                            safe_write_force(dest_ws, 163, 2, s9["B163"], center=False)
+                            
+                            # B169 (인화점 숫자)
+                            flash = s9["B169"]
+                            flash_num = re.findall(r'(\d{2,3})', flash)
+                            if flash_num:
+                                safe_write_force(dest_ws, 169, 2, flash_num[0], center=False)
+                            else:
+                                safe_write_force(dest_ws, 169, 2, "", center=False)
+                                
+                            # B176 (비중 수치 ± 0.01)
+                            gravity = s9["B176"]
+                            # 숫자(소수점 포함) 추출
+                            g_match = re.search(r'([\d\.]+)', gravity)
+                            if g_match:
+                                val_g = g_match.group(1)
+                                safe_write_force(dest_ws, 176, 2, f"{val_g} ± 0.01", center=False)
+                            else:
+                                safe_write_force(dest_ws, 176, 2, "", center=False)
+                                
+                            # B182 (굴절률 수치 ± 0.005)
+                            refract = s9["B182"]
+                            r_match = re.search(r'([\d\.]+)', refract)
+                            if r_match:
+                                val_r = r_match.group(1)
+                                safe_write_force(dest_ws, 182, 2, f"{val_r} ± 0.005", center=False)
+                            else:
+                                safe_write_force(dest_ws, 182, 2, "", center=False)
 
                             target_anchor_row = 22
                             if hasattr(dest_ws, '_images'):
@@ -674,7 +784,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 최종 확정 변환.")
+                    st.success("완료! 섹션 8/9 추가 및 포맷팅 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
