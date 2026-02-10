@@ -16,15 +16,15 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (HP(K) 정밀 보정 완료)")
+st.title("MSDS 양식 변환기 (이미지 오류 방지 패치 완료)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
 # [스타일]
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
-# [수정] 기본 왼쪽 정렬
 ALIGN_DATA = Alignment(horizontal='left', vertical='center', wrap_text=True)
+ALIGN_TITLE = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
@@ -109,6 +109,7 @@ def get_clustered_lines(doc):
             row_base_y = words[0][1]
             
             for w in words[1:]:
+                # CFF/HP 공통 8px
                 if abs(w[1] - row_base_y) < 8:
                     current_row.append(w)
                 else:
@@ -300,12 +301,11 @@ def extract_section_smart(all_lines, start_kw, end_kw):
                 
     return final_text
 
-# [HP(K) 전용] 섹션 8 필터링 함수 (업데이트)
+# [HP(K) 전용] 섹션 8 필터링 함수
 def parse_sec8_hp_content(text):
     if not text: return "자료없음"
     
     # 1. 하이픈 또는 줄바꿈으로 1차 분리
-    # 원본이 "- [물질명] : 해당없음" 형태이므로 하이픈으로 나누는게 안전
     chunks = text.split("-")
     valid_lines = []
     
@@ -330,14 +330,11 @@ def parse_sec8_hp_content(text):
             final_line = f"{name_part} : {value_part}"
             valid_lines.append(final_line)
         else:
-            # 콜론이 없는 문장은 그냥 내용으로 간주 (단, 해당없음이면 제외)
             if "해당없음" not in clean_chunk:
                 clean_chunk = clean_chunk.replace("[", "").replace("]", "").strip()
                 valid_lines.append(clean_chunk)
             
     if not valid_lines: return "자료없음"
-    
-    # 다시 연결 (줄바꿈만 사용, 하이픈은 제거했으므로)
     return "\n".join(valid_lines)
 
 # --------------------------------------------------------------------------
@@ -382,7 +379,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         lines_hp = full_text_hp.split('\n')
         state = 0
         for l in lines_hp:
-            # 하이픈 제거 후 분류 추출
             if "가. 유해성" in l: state=1; continue
             if "나. 예방조치" in l: state=0; continue
             if state==1 and l.strip():
@@ -416,7 +412,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P4"): result["p_stor"].append(code)
             elif p.startswith("P5"): result["p_disp"].append(code)
 
-    # [수정] CAS 정규식 유연화 (공백 허용)
     regex_cas = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     regex_conc = re.compile(r'\b(\d+)\s*~\s*(\d+)\b')
     in_comp = False
@@ -425,13 +420,11 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         if "3." in txt and ("성분" in txt or "Composition" in txt): in_comp=True; continue
         if "4." in txt and ("응급" in txt or "First" in txt): in_comp=False; break
         if in_comp:
-            # 1.1 같은 순번은 무시
             if re.search(r'^\d+\.\d+', txt): continue 
-            
             cas = regex_cas.search(txt)
             conc = regex_conc.search(txt)
             if cas:
-                c_val = cas.group(1).replace(" ", "") # 공백 제거하여 저장
+                c_val = cas.group(1).replace(" ", "") 
                 cn_val = None
                 if conc:
                     s, e = conc.group(1), conc.group(2)
@@ -913,8 +906,8 @@ with col_center:
                                     rect = page.get_image_bbox(img_info)
                                     if rect.y1 < 150: continue 
                                     
-                                    base_image = doc.extract_image(xref)
-                                    try:
+                                    try: # [안전장치 추가] 이미지 추출 오류 방지
+                                        base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         matched_name = None
                                         if loaded_refs:
