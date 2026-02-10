@@ -15,7 +15,7 @@ import math
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (섹션 8/9 추가 & 정밀 포맷팅)")
+st.title("MSDS 양식 변환기 (수치 오류 정밀 수정판)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -291,7 +291,7 @@ def extract_section_smart(all_lines, start_kw, end_kw):
     return final_text
 
 # --------------------------------------------------------------------------
-# [함수] 메인 파서 (섹션 8, 9 추가)
+# [함수] 메인 파서
 # --------------------------------------------------------------------------
 def parse_pdf_final(doc):
     all_lines = get_clustered_lines(doc)
@@ -378,16 +378,7 @@ def parse_pdf_final(doc):
     data["B144"] = extract_section_smart(all_lines, "나. 안전한", ["8.", "노출"])
     result["sec4_to_7"] = data
 
-    # [섹션 8 추출]
-    sec8_text = extract_section_smart(all_lines, "8. 노출방지", "9. 물리화학")
-    # 임시 변수에 저장 후 내부 파싱
-    # 텍스트 전체에서 키워드 찾아서 분리
-    # B148/149: "국내규정" ~ "ACGIH 규정"
-    # B150: "ACGIH 규정" ~ "생물학적"
-    # 편의상 extract_section_smart를 재사용하기엔 all_lines 범위가 안맞음.
-    # all_lines 전체에서 "8."과 "9." 사이를 찾고, 그 안에서 세부 파싱.
-    
-    # 8번 섹션 전체 라인
+    # [섹션 8]
     sec8_lines = []
     start_8 = -1; end_8 = -1
     for i, line in enumerate(all_lines):
@@ -395,17 +386,13 @@ def parse_pdf_final(doc):
         if "9. 물리화학" in line['text']: end_8 = i; break
     if start_8 != -1:
         if end_8 == -1: end_8 = len(all_lines)
-        # 섹션 8 내부 라인들
         sec8_lines = all_lines[start_8:end_8]
     
-    # B148_149
     b148_raw = extract_section_smart(sec8_lines, "국내규정", "ACGIH")
-    # B150
     b150_raw = extract_section_smart(sec8_lines, "ACGIH", "생물학적")
-    
     result["sec8"] = {"B148": b148_raw, "B150": b150_raw}
 
-    # [섹션 9 추출]
+    # [섹션 9]
     sec9_lines = []
     start_9 = -1; end_9 = -1
     for i, line in enumerate(all_lines):
@@ -557,7 +544,7 @@ with col_center:
     
     if st.button("▶ 변환 시작", use_container_width=True):
         if uploaded_files and master_data_file and template_file:
-            with st.spinner("섹션 8, 9 추가 및 정밀 변환 중..."):
+            with st.spinner("섹션 8, 9 정밀 보정 변환 중..."):
                 
                 new_files = []
                 new_download_data = {}
@@ -653,9 +640,8 @@ with col_center:
                                         except: pass
                                 except Exception as e: pass
 
-                            # [섹션 8 처리]
+                            # [섹션 8] ACGIH 규정 필터링 추가
                             s8 = parsed_data["sec8"]
-                            # B148/149
                             val148 = s8["B148"].replace("해당없음", "자료없음")
                             lines148 = [l.strip() for l in val148.split('\n') if l.strip()]
                             
@@ -664,44 +650,43 @@ with col_center:
                             dest_ws.row_dimensions[149].hidden = True
                             
                             if lines148:
-                                # 첫 줄 B148
                                 safe_write_force(dest_ws, 148, 2, lines148[0], center=False)
                                 if len(lines148) > 1:
-                                    # 나머지 줄 B149
                                     rest_text = "\n".join(lines148[1:])
                                     safe_write_force(dest_ws, 149, 2, rest_text, center=False)
                                     dest_ws.row_dimensions[149].hidden = False
                                     
-                            # B150
+                            # ACGIH 규정 필터링
                             val150 = s8["B150"].replace("해당없음", "자료없음")
+                            val150 = re.sub(r"^규정[:\s]*", "", val150).strip()
                             safe_write_force(dest_ws, 150, 2, val150, center=False)
 
-                            # [섹션 9 처리]
+                            # [섹션 9] 비중/굴절률 20 제거 및 정밀 추출
                             s9 = parsed_data["sec9"]
-                            # B163
                             safe_write_force(dest_ws, 163, 2, s9["B163"], center=False)
                             
-                            # B169 (인화점 숫자)
                             flash = s9["B169"]
                             flash_num = re.findall(r'(\d{2,3})', flash)
                             if flash_num:
-                                safe_write_force(dest_ws, 169, 2, flash_num[0], center=False)
+                                safe_write_force(dest_ws, 169, 2, f"{flash_num[0]} ℃", center=False)
                             else:
                                 safe_write_force(dest_ws, 169, 2, "", center=False)
                                 
-                            # B176 (비중 수치 ± 0.01)
+                            # 비중 (20 제거 후 수치 추출)
                             gravity = s9["B176"]
-                            # 숫자(소수점 포함) 추출
-                            g_match = re.search(r'([\d\.]+)', gravity)
+                            gravity_cleaned = re.sub(r"\(20℃\)\s*\(물=1\)", "", gravity) # 20 제거
+                            gravity_cleaned = re.sub(r"\(20℃\)", "", gravity_cleaned)
+                            g_match = re.search(r'([\d\.]+)', gravity_cleaned)
                             if g_match:
                                 val_g = g_match.group(1)
                                 safe_write_force(dest_ws, 176, 2, f"{val_g} ± 0.01", center=False)
                             else:
                                 safe_write_force(dest_ws, 176, 2, "", center=False)
                                 
-                            # B182 (굴절률 수치 ± 0.005)
+                            # 굴절률 (20 제거 후 수치 추출)
                             refract = s9["B182"]
-                            r_match = re.search(r'([\d\.]+)', refract)
+                            refract_cleaned = re.sub(r"\(20℃\)", "", refract) # 20 제거
+                            r_match = re.search(r'([\d\.]+)', refract_cleaned)
                             if r_match:
                                 val_r = r_match.group(1)
                                 safe_write_force(dest_ws, 182, 2, f"{val_r} ± 0.005", center=False)
@@ -784,7 +769,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 섹션 8/9 추가 및 포맷팅 적용.")
+                    st.success("완료! 인화점 단위, 규정 삭제, 비중/굴절률 수치 정밀 보정.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
