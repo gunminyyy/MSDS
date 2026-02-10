@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (HP CAS/함유량 분리 & 로고 정밀제거)")
+st.title("MSDS 양식 변환기 (그림문자 화이트리스트 & 신호어 복구)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -71,6 +71,7 @@ def find_best_match_name(src_img, ref_images):
             if diff < best_score:
                 best_score = diff
                 best_name = name
+        # 유사도 기준 (낮을수록 유사함, 0=완벽일치)
         if best_score < 65: return best_name
         else: return None
     except: return None
@@ -365,14 +366,26 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     for line in all_lines:
         if "3. 구성성분" in line['text'] or "3. 성분" in line['text']:
             limit_y = line['global_y0']; break
+    
+    # [Fix] 신호어 추출 범위 확대 (섹션 3 이전의 모든 텍스트)
     full_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
     
+    # [Fix] 신호어 추출 로직 CFF/HP 공통 적용
+    found_signal = False
     for line in full_text_hp.split('\n'):
         if "신호어" in line:
             val = line.replace("신호어", "").replace(":", "").strip()
-            if val in ["위험", "경고"]: result["signal_word"] = val
-        elif line.strip() in ["위험", "경고"] and not result["signal_word"]:
-            result["signal_word"] = line.strip()
+            if val in ["위험", "경고"]: 
+                result["signal_word"] = val
+                found_signal = True
+                break
+    
+    # "신호어" 라벨 못 찾았을 경우, 단독으로 있는 위험/경고 찾기
+    if not found_signal:
+        for line in full_text_hp.split('\n'):
+            if line.strip() in ["위험", "경고"]:
+                result["signal_word"] = line.strip()
+                break
     
     if mode == "HP(K)":
         lines_hp = full_text_hp.split('\n')
@@ -443,7 +456,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                     # 함유량: 단일 숫자 (CAS 번호는 이미 지워짐)
                     m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_clean)
                     if m_single:
-                        # 오인 방지를 위한 간단한 값 체크 (100 이하)
                         try:
                             if float(m_single.group(1)) <= 100:
                                 cn_val = m_single.group(1)
@@ -555,7 +567,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         sec15_lines = all_lines[start_15:end_15]
     
     if mode == "HP(K)":
-        # [Fix] HP(K)는 B521 건드리지 않음 (Skip)
         danger_act = ""
     else:
         danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", "마. 폐기물", mode)
@@ -776,9 +787,6 @@ with col_center:
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
-                                    # [XML 오류 방지] 수식 삭제는 매우 신중하게 처리
-                                    # 사용자 요청: "양식의 B열에는 수식이 걸려 있으므로 먼저 제거"
-                                    # 따라서 B열(col=2)만 타겟팅
                                     if cell.column == 2 and cell.data_type == 'f':
                                         cell.value = ""
 
@@ -898,7 +906,6 @@ with col_center:
 
                             # [섹션 15]
                             s15 = parsed_data["sec15"]
-                            # [Fix] HP(K)는 B521 스킵, CFF(K)만 입력
                             if option == "CFF(K)":
                                 safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
 
@@ -914,21 +921,21 @@ with col_center:
                                 image_list = doc.get_page_images(page_index)
                                 for img_info in image_list:
                                     xref = img_info[0]
-                                    # [HP] 1페이지 상단 15% 로고만 제외
-                                    if option == "HP(K)" and page_index == 0:
-                                        try:
-                                            page = doc[page_index]
-                                            rect = page.get_image_bbox(img_info)
-                                            # 상단 15% (약 120pt) 이내면 로고로 간주
-                                            if rect.y1 < (page.rect.height * 0.15): continue
-                                        except: continue
+                                    
+                                    # [Fix] Image Filter: Allow only matches (Whitelist)
+                                    # We do NOT use Y-coordinate filter anymore for logo removal.
+                                    # We rely on find_best_match_name to filter out non-GHS images.
                                     
                                     try:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         matched_name = None
+                                        
+                                        # Only proceed if we have reference images to compare against
                                         if loaded_refs:
                                             matched_name = find_best_match_name(pil_img, loaded_refs)
+                                        
+                                        # Only add if it matches a GHS symbol (Whitelist)
                                         if matched_name:
                                             sort_key = extract_number(matched_name)
                                             collected_pil_images.append((sort_key, pil_img))
