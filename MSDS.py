@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (이미지 원본 교체 & 신호어/함유량 최종)")
+st.title("MSDS 양식 변환기 (XML 복구 & 이미지 화이트리스트)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -71,6 +71,7 @@ def find_best_match_name(src_img, ref_images):
             if diff < best_score:
                 best_score = diff
                 best_name = name
+        # 유사도 기준 (낮을수록 유사함)
         if best_score < 65: return best_name
         else: return None
     except: return None
@@ -366,31 +367,26 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         if "3. 구성성분" in line['text'] or "3. 성분" in line['text']:
             limit_y = line['global_y0']; break
     
+    # [Fix] 신호어 추출 범위: 문서 시작부터 섹션3 전까지 스캔
     full_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
     
-    # [Fix] 신호어 족집게 (범위 지정)
-    signal_found = False
-    try:
-        start_sig = full_text_hp.find("신호어")
-        end_sig = full_text_hp.find("유해", start_sig)
-        
-        if start_sig != -1 and end_sig != -1:
-            target_area = full_text_hp[start_sig:end_sig]
-            # 기호(-, • 등) 뒤에 오는 위험/경고 추출
-            m = re.search(r"[-•]\s*(위험|경고)", target_area)
-            if m:
-                result["signal_word"] = m.group(1)
-                signal_found = True
-    except: pass
-
-    if not signal_found:
-        # 기존 로직 백업
+    # 신호어 추출 (전체 스캔 방식)
+    found_signal = False
+    # 1. "신호어 : 위험" 패턴 확인
+    for line in full_text_hp.split('\n'):
+        if "신호어" in line:
+            val = line.replace("신호어", "").replace(":", "").strip()
+            if val in ["위험", "경고"]: 
+                result["signal_word"] = val
+                found_signal = True
+                break
+    
+    # 2. 독립된 "위험", "경고" 단어 확인
+    if not found_signal:
         for line in full_text_hp.split('\n'):
-            if "신호어" in line:
-                val = line.replace("신호어", "").replace(":", "").strip()
-                if val in ["위험", "경고"]: result["signal_word"] = val
-            elif line.strip() in ["위험", "경고"] and not result["signal_word"]:
+            if line.strip() in ["위험", "경고"]:
                 result["signal_word"] = line.strip()
+                break
     
     if mode == "HP(K)":
         lines_hp = full_text_hp.split('\n')
@@ -429,6 +425,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P4"): result["p_stor"].append(code)
             elif p.startswith("P5"): result["p_disp"].append(code)
 
+    # [수정] CAS 정규식 (3단 숫자, 하이픈 포함)
     regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     
     in_comp = False
@@ -439,27 +436,35 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         if in_comp:
             if re.search(r'^\d+\.\d+', txt): continue 
             
+            # [Fix] 1. CAS 번호 찾기 (가장 강력한 패턴)
             cas_found = regex_cas_strict.findall(txt)
             if cas_found:
                 c_val = cas_found[0].replace(" ", "")
+                
+                # [Fix] 2. 텍스트에서 CAS 번호 삭제 (함유량 오인 방지)
                 txt_no_cas = txt.replace(cas_found[0], " " * len(cas_found[0]))
                 
+                # [Fix] 3. 남은 텍스트에서 함유량 찾기
                 cn_val = ""
+                # 범위형 (5-10, 5 ~ 10)
                 m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
-                
                 if m_range:
                     s, e = m_range.group(1), m_range.group(2)
-                    if s == "1": s = "0"
+                    if s == "1": s = "0" # 1->0 변환
                     cn_val = f"{s} ~ {e}"
                 else:
+                    # 단일 숫자 (CAS 제거 후 남은 숫자)
                     m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                     if m_single:
                         try:
+                            # 100 이하 숫자만 함유량으로 인정 (연도 등 오인 방지)
                             if float(m_single.group(1)) <= 100:
                                 cn_val = m_single.group(1)
                         except: pass
                 
+                # [Fix] 4. 소수점 필터링 (함유량에 점이 있으면 행 제외)
                 if "." in cn_val: continue
+                
                 result["composition_data"].append((c_val, cn_val))
 
     # 섹션 4~7
@@ -909,35 +914,27 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지] XML 오류 방지 & 화이트리스트 & 물리적 필터
+                            # [이미지] XML 오류 방지 & 화이트리스트
+                            # 기존 이미지 삭제 로직 제거 (파일 손상 방지)
+                            
                             collected_pil_images = []
                             for page_index in range(len(doc)):
                                 image_list = doc.get_page_images(page_index)
                                 for img_info in image_list:
                                     xref = img_info[0]
-                                    # [HP] 1페이지 상단 20% 이내면 무조건 로고로 간주 (삭제)
-                                    if option == "HP(K)" and page_index == 0:
-                                        try:
-                                            page = doc[page_index]
-                                            rect = page.get_image_bbox(img_info)
-                                            # 약 170px 높이 이내면 로고
-                                            if rect.y1 < (page.rect.height * 0.20): continue
-                                        except: continue
-                                    
                                     try:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         matched_name = None
                                         
-                                        # Reference 이미지가 있어야 비교 가능 (2차 검증)
+                                        # Reference 이미지가 있어야 비교 가능
                                         if loaded_refs:
                                             matched_name = find_best_match_name(pil_img, loaded_refs)
                                         
                                         # 화이트리스트: GHS 그림문자와 일치하는 것만 추가
                                         if matched_name:
-                                            # 원본 이미지 교체 (CFF 방식)
-                                            clean_img = loaded_refs[matched_name]
-                                            collected_pil_images.append((extract_number(matched_name), clean_img))
+                                            sort_key = extract_number(matched_name)
+                                            collected_pil_images.append((sort_key, pil_img))
                                     except: continue
                             
                             unique_images = {}
@@ -990,7 +987,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 신호어/로고 정밀 타격.")
+                    st.success("완료! 그림문자 화이트리스트 & 신호어 복구 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
