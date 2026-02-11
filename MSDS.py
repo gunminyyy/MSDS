@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (XML/그림문자 최종 해결)")
+st.title("MSDS 양식 변환기 (CFF/HP 로직 완전 분리)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -27,9 +27,10 @@ ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [함수] 이미지 처리
+# [함수] 이미지 처리 (이원화)
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
+    """[HP전용] 이미지의 불필요한 여백 제거"""
     try:
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -45,7 +46,22 @@ def auto_crop(pil_img):
     except:
         return pil_img
 
-def normalize_image(pil_img):
+def normalize_image_legacy(pil_img):
+    """[CFF전용] 기존 확정 로직 (32x32 단순 리사이즈)"""
+    try:
+        if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
+            background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
+            if pil_img.mode == 'P': pil_img = pil_img.convert('RGBA')
+            background.paste(pil_img, mask=pil_img.split()[3])
+            pil_img = background
+        else:
+            pil_img = pil_img.convert('RGB')
+        return pil_img.resize((32, 32)).convert('L')
+    except:
+        return pil_img.resize((32, 32)).convert('L')
+
+def normalize_image_smart(pil_img):
+    """[HP전용] 신규 보정 로직 (Auto-Crop + 64x64)"""
     try:
         cropped_img = auto_crop(pil_img)
         return cropped_img.resize((64, 64)).convert('L')
@@ -68,20 +84,38 @@ def get_reference_images():
         return ref_images, True
     except: return {}, False
 
-def find_best_match_name(src_img, ref_images):
+def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
+    
+    # [로직 분기]
+    if mode == "HP(K)":
+        # HP: Auto-Crop 사용, 임계값 60, 해상도 64
+        src_norm = normalize_image_smart(src_img)
+        threshold = 60
+    else:
+        # CFF: 기존 방식(32x32), 임계값 65
+        src_norm = normalize_image_legacy(src_img)
+        threshold = 65
+
     try:
-        src_norm = normalize_image(src_img)
         src_arr = np.array(src_norm, dtype='int16')
         for name, ref_img in ref_images.items():
-            ref_norm = normalize_image(ref_img)
+            
+            # 참조 이미지도 모드에 따라 다르게 처리
+            if mode == "HP(K)":
+                ref_norm = normalize_image_smart(ref_img)
+            else:
+                ref_norm = normalize_image_legacy(ref_img)
+                
             ref_arr = np.array(ref_norm, dtype='int16')
+            
             diff = np.mean(np.abs(src_arr - ref_arr))
             if diff < best_score:
                 best_score = diff
                 best_name = name
-        if best_score < 60: return best_name
+        
+        if best_score < threshold: return best_name
         else: return None
     except: return None
 
@@ -377,19 +411,23 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     
     full_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
     
+    # [신호어 추출 - 로직 분리]
     signal_found = False
-    try:
-        start_sig = full_text_hp.find("신호어")
-        end_sig = full_text_hp.find("유해", start_sig)
-        
-        if start_sig != -1 and end_sig != -1:
-            target_area = full_text_hp[start_sig:end_sig]
-            m = re.search(r"[-•]\s*(위험|경고)", target_area)
-            if m:
-                result["signal_word"] = m.group(1)
-                signal_found = True
-    except: pass
-
+    
+    if mode == "HP(K)":
+        # HP: 족집게 방식 우선
+        try:
+            start_sig = full_text_hp.find("신호어")
+            end_sig = full_text_hp.find("유해", start_sig)
+            if start_sig != -1 and end_sig != -1:
+                target_area = full_text_hp[start_sig:end_sig]
+                m = re.search(r"[-•]\s*(위험|경고)", target_area)
+                if m:
+                    result["signal_word"] = m.group(1)
+                    signal_found = True
+        except: pass
+    
+    # CFF는 기존 방식만, HP는 족집게 실패시 기존 방식 백업
     if not signal_found:
         for line in full_text_hp.split('\n'):
             if "신호어" in line:
@@ -435,7 +473,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P4"): result["p_stor"].append(code)
             elif p.startswith("P5"): result["p_disp"].append(code)
 
+    # [함유량 추출 - 로직 분리]
+    regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
     regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
+    regex_cas_simple = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b') # CFF용
     
     in_comp = False
     for line in all_lines:
@@ -445,28 +486,47 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         if in_comp:
             if re.search(r'^\d+\.\d+', txt): continue 
             
-            cas_found = regex_cas_strict.findall(txt)
-            if cas_found:
-                c_val = cas_found[0].replace(" ", "")
-                txt_no_cas = txt.replace(cas_found[0], " " * len(cas_found[0]))
-                
-                cn_val = ""
-                m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
-                
-                if m_range:
-                    s, e = m_range.group(1), m_range.group(2)
-                    if s == "1": s = "0"
-                    cn_val = f"{s} ~ {e}"
-                else:
-                    m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
-                    if m_single:
-                        try:
-                            if float(m_single.group(1)) <= 100:
-                                cn_val = m_single.group(1)
-                        except: pass
-                
-                if "." in cn_val: continue
-                result["composition_data"].append((c_val, cn_val))
+            if mode == "HP(K)":
+                # HP: CAS 선삭제 후 추출
+                cas_found = regex_cas_strict.findall(txt)
+                if cas_found:
+                    c_val = cas_found[0].replace(" ", "")
+                    txt_no_cas = txt.replace(cas_found[0], " " * len(cas_found[0]))
+                    
+                    cn_val = ""
+                    m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
+                    
+                    if m_range:
+                        s, e = m_range.group(1), m_range.group(2)
+                        if s == "1": s = "0"
+                        cn_val = f"{s} ~ {e}"
+                    else:
+                        m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
+                        if m_single:
+                            try:
+                                if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
+                            except: pass
+                    
+                    if "." in cn_val: continue
+                    result["composition_data"].append((c_val, cn_val))
+            
+            else:
+                # CFF: 기존 로직 (동시 추출)
+                cas = regex_cas_simple.search(txt)
+                conc = regex_conc.search(txt)
+                if cas:
+                    c_val = cas.group(1).replace(" ", "")
+                    cn_val = ""
+                    if conc:
+                        s, e = conc.group(1), conc.group(2)
+                        if s == "1": s = "0"
+                        cn_val = f"{s} ~ {e}"
+                    elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt):
+                        m = re.search(r'\b(\d+(?:\.\d+)?)\b', txt)
+                        cn_val = m.group(1)
+                    
+                    if "." in cn_val: continue
+                    result["composition_data"].append((c_val, cn_val))
 
     # 섹션 4~7
     data = {}
@@ -788,7 +848,7 @@ with col_center:
                             # 1. 외부 연결 끊기 (XML 오류 방지 핵심)
                             dest_wb.external_links = []
 
-                            # 2. 기존 그림 제거 (초기화) - 오류 없이 안전하게
+                            # 2. 기존 그림 제거 (초기화)
                             dest_ws._images = []
 
                             # 초기화 (수식 삭제)
@@ -921,18 +981,22 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지] XML 오류 방지 & Auto-Crop & CFF 로직
-                            
+                            # [이미지] 로직 분기 적용
                             collected_pil_images = []
-                            for page_index in range(len(doc)):
+                            # 메모리 절약: 1페이지만 스캔
+                            scan_limit = min(1, len(doc))
+                            
+                            for page_index in range(scan_limit):
                                 image_list = doc.get_page_images(page_index)
                                 for img_info in image_list:
                                     xref = img_info[0]
+                                    
                                     # [HP] 1페이지 상단 20% 로고 제외
-                                    if option == "HP(K)" and page_index == 0:
+                                    if option == "HP(K)":
                                         try:
                                             page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
+                                            # 상단 20% (약 170pt) 이내면 로고로 간주하여 차단
                                             if rect.y1 < (page.rect.height * 0.20): continue
                                         except: continue
                                     
@@ -941,13 +1005,11 @@ with col_center:
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         matched_name = None
                                         
-                                        # Reference 이미지가 있어야 비교 가능
                                         if loaded_refs:
-                                            matched_name = find_best_match_name(pil_img, loaded_refs)
+                                            # [핵심] 모드에 따라 매칭 로직 분기
+                                            matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
                                         
-                                        # 화이트리스트: GHS 그림문자와 일치하는 것만 추가
                                         if matched_name:
-                                            # [핵심] 원본 이미지 교체 (CFF 방식)
                                             clean_img = loaded_refs[matched_name]
                                             collected_pil_images.append((extract_number(matched_name), clean_img))
                                     except: continue
@@ -974,7 +1036,6 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG') 
                                 img_byte_arr.seek(0)
-                                # 안전하게 이미지 추가 (기존꺼 삭제 안함)
                                 dest_ws.add_image(XLImage(img_byte_arr), 'B23')
 
                             output = io.BytesIO()
@@ -1002,7 +1063,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 그림문자 교체 & 외부연결 오류 해결.")
+                    st.success("완료! CFF/HP 로직 완전 이원화 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
