@@ -16,11 +16,11 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (CFF 분류 섹션 범위 확장)")
+st.title("MSDS 양식 변환기 (int resize 오류 해결판)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [1. 함수 정의 구역] - 최상단 배치
+# [1. 유틸리티 함수]
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -141,7 +141,7 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수] - HP(K) / CFF(K) 확정 로직
+# [2. 이미지 함수] - HP/CFF 이원화
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
     try:
@@ -158,7 +158,7 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 확정 로직 (32x32)"""
+    """[CFF전용] 기존 확정 로직 (32x32)"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -195,6 +195,7 @@ def get_reference_images():
         return ref_images, True
     except: return {}, False
 
+# [이미지 필터] - HP 전용
 def is_blue_dominant(pil_img):
     try:
         img = pil_img.resize((50, 50)).convert('RGB')
@@ -214,9 +215,11 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
+    # HP 계열 (K, E)
     if "HP" in mode:
         src_norm = normalize_image_smart(src_img)
         threshold = 80
+    # CFF 계열 (K, E)
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -248,6 +251,7 @@ def extract_number(filename):
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
+    # 국문/영문 공통 노이즈 제거 (영문 키워드 추가 필요 시 여기에)
     noise_regexs = [
         r'^\s*\d+\s*/\s*\d+\s*$', r'물질안전보건자료', r'Material Safety Data Sheet', 
         r'PAGE', r'Ver\.\s*:?\s*\d+\.?\d*', r'발행일\s*:?.*', r'Date of issue',
@@ -291,6 +295,7 @@ def get_clustered_lines(doc):
     return all_lines
 
 def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
+    # [CFF(E) TODO] 영문 키워드 처리를 위해 추후 수정 필요할 수 있음
     start_idx = -1; end_idx = -1
     clean_start_kw = start_kw.replace(" ", "")
     for i, line in enumerate(all_lines):
@@ -425,14 +430,12 @@ def parse_sec8_hp_content(text):
 def parse_pdf_final(doc, mode="CFF(K)"):
     
     if mode == "CFF(E)":
-        # CFF(E) 로직 (추후 구현)
         return {
             "hazard_cls": [], "signal_word": "TEST_CFF_E", "h_codes": [], 
             "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
             "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}, "sec14": {}, "sec15": {}
         }
 
-    # [CFF(K) / HP(K) 기존 확정 로직]
     all_lines = get_clustered_lines(doc)
     
     if mode == "CFF(K)":
@@ -487,25 +490,21 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 if "공급자" not in l and "회사명" not in l:
                     clean_l = l.replace("-", "").strip()
                     if clean_l: result["hazard_cls"].append(clean_l)
-    else: # CFF(K) - 수정된 로직
+    else: 
         lines_hp = full_text_hp.split('\n')
         state = 0
         for l in lines_hp:
             l_ns = l.replace(" ", "")
-            # [CFF(K) 수정] 2번 제목부터 인식 시작 (범위 확장)
             if "2.유해성" in l_ns and "위험성" in l_ns: 
                 state = 1
-                continue # 제목 줄 자체는 건너뜀
+                continue 
             if "나.예방조치" in l_ns: 
                 state = 0
                 continue
-                
             if state == 1 and l.strip():
-                # [CFF(K) 수정] '가. 유해성 분류' 헤더만 있는 줄은 제외
                 if "가.유해성" in l_ns and "분류" in l_ns:
                     check_header = re.sub(r'[가-하][\.\s]*유해성[\s\.]*위험성[\s\.]*분류', '', l).strip()
-                    if not check_header: continue # 데이터 없이 헤더만 있으면 스킵
-                
+                    if not check_header: continue 
                 if "공급자" not in l and "회사명" not in l:
                     result["hazard_cls"].append(l.strip())
 
@@ -921,9 +920,11 @@ with col_center:
 
                                         # 매칭 수행
                                         if loaded_refs:
+                                            # [수정] Score 함께 반환
                                             matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
                                             if matched_name:
                                                 clean_img = loaded_refs[matched_name]
+                                                # Score도 같이 저장
                                                 collected_pil_images.append((extract_number(matched_name), clean_img, score))
                                     except: continue
                             
@@ -951,7 +952,7 @@ with col_center:
                                     if key not in final_images_map:
                                         final_images_map[key] = (img, 0)
 
-                            # 딕셔너리를 리스트로 변환 및 정렬
+                            # 딕셔너리를 리스트로 변환 및 정렬 (이미지 객체만 추출)
                             final_sorted_imgs = [item[0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
                             
                             if final_sorted_imgs:
