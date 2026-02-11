@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (하단 제한 해제 & 안전 확보)")
+st.title("MSDS 양식 변환기 (위치무시 & 점수기반 필터링)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -141,9 +141,10 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수] - HP/CFF 이원화 유지
+# [2. 이미지 함수] - HP/CFF 이원화
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
+    """[HP전용] 이미지 여백 제거"""
     try:
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -158,7 +159,7 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 확정 로직"""
+    """[CFF전용] 기존 확정 로직 (32x32)"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -195,13 +196,14 @@ def get_reference_images():
         return ref_images, True
     except: return {}, False
 
+# [핵심] Score 함께 반환
 def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
     if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
-        threshold = 75 
+        threshold = 85 # [HP] 기준을 매우 넉넉하게 잡음 (나중에 점수로 거르기 위해)
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -220,6 +222,7 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
                 best_score = diff
                 best_name = name
         
+        # [CFF/HP 공통] Score 함께 반환 (CFF에서는 Score 무시하면 됨)
         if best_score < threshold:
             return best_name, best_score
         else:
@@ -867,18 +870,20 @@ with col_center:
                                         try:
                                             page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
-                                            # 상단 15% (약 120px) 이내는 로고로 간주하여 차단
+                                            # 상단 15% (로고)만 제외, 하단 제한 해제
                                             if rect.y1 < (page.rect.height * 0.15): continue
                                         except: continue
                                     
                                     try:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                        matched_name = None
                                         
+                                        # 매칭 수행 (Score 포함 반환)
                                         if loaded_refs:
+                                            # HP일 때 Threshold를 85로 넉넉하게 잡음 (점수로 거를 예정)
                                             matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
                                             
+                                            # 매칭 성공 시
                                             if matched_name:
                                                 clean_img = loaded_refs[matched_name]
                                                 collected_pil_images.append((extract_number(matched_name), clean_img, score))
@@ -892,8 +897,9 @@ with col_center:
                                 min_score = min(item[2] for item in collected_pil_images)
                                 
                                 for key, img, score in collected_pil_images:
-                                    # 2. 1등 점수 대비 +10점 이내인 것만 통과 (짝퉁 제거)
-                                    if score > min_score + 10: 
+                                    # 2. 1등 점수 대비 +25점 이내인 것만 통과 (짝퉁 제거)
+                                    # 기준을 조금 더 넉넉하게(25) 잡아서 진짜 2등이 탈락하는 일 방지
+                                    if score > min_score + 25: 
                                         continue
                                     
                                     # 3. 중복 제거 (더 좋은 점수 우선)
