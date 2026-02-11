@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (최종 확정판)")
+st.title("MSDS 양식 변환기 (EC/CAS 완벽 제거 & ~형식 준수)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -27,37 +27,8 @@ ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [함수] 이미지 처리
+# [함수] 이미지 처리 (이원화 유지)
 # --------------------------------------------------------------------------
-def normalize_image(pil_img):
-    try:
-        if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
-            background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
-            if pil_img.mode == 'P': pil_img = pil_img.convert('RGBA')
-            background.paste(pil_img, mask=pil_img.split()[3])
-            pil_img = background
-        else:
-            pil_img = pil_img.convert('RGB')
-        return pil_img.resize((32, 32)).convert('L')
-    except:
-        return pil_img.resize((32, 32)).convert('L')
-
-def get_reference_images():
-    img_folder = "reference_imgs"
-    if not os.path.exists(img_folder): return {}, False
-    try:
-        ref_images = {}
-        file_list = sorted(os.listdir(img_folder)) 
-        for fname in file_list:
-            if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.tif', '.tiff')):
-                full_path = os.path.join(img_folder, fname)
-                try:
-                    pil_img = PILImage.open(full_path)
-                    ref_images[fname] = pil_img
-                except: continue
-        return ref_images, True
-    except: return {}, False
-
 def auto_crop(pil_img):
     """[HP전용] 이미지 여백 제거"""
     try:
@@ -74,7 +45,7 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 기존 단순 리사이즈 (32x32) - 확정 로직"""
+    """[CFF전용] 기존 확정 로직 (32x32)"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -99,7 +70,6 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
-    # [이미지 로직 분기]
     if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
         threshold = 60
@@ -478,8 +448,12 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P5"): result["p_disp"].append(code)
 
     # [함유량 추출 - 로직 분리]
-    regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
-    regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
+    # [Fix] CAS와 EC 번호를 모두 아우르는 삭제용 정규식
+    # CAS: 2~7자리-2자리-1자리
+    # EC: 3자리-3자리-1자리
+    # 통합: 2~7자리 - 2~3자리 - 1자리
+    regex_cas_ec_kill = re.compile(r'\b\d{2,7}\s*-\s*\d{2,3}\s*-\s*\d\b')
+    regex_tilde_range = re.compile(r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)') # CFF용 ~ 찾기
     
     in_comp = False
     for line in all_lines:
@@ -489,49 +463,44 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         if in_comp:
             if re.search(r'^\d+\.\d+', txt): continue 
             
-            # [공통] CAS 번호 선삭제 (혼입 방지)
-            cas_found = regex_cas_strict.findall(txt)
-            txt_for_conc = txt # 기본
+            # 1. CAS/EC 번호 찾아서 저장 & 삭제
+            # (CAS 번호는 엑셀에 적어야 하므로 찾긴 찾아야 함)
+            cas_found = regex_cas_ec_kill.findall(txt)
             c_val = ""
-            
             if cas_found:
+                # 첫 번째 매칭을 CAS 번호로 간주
                 c_val = cas_found[0].replace(" ", "")
-                # CAS 번호를 텍스트에서 지움
-                txt_for_conc = txt.replace(cas_found[0], " " * len(cas_found[0]))
+                
+            # 텍스트에서 CAS, EC 번호 패턴 모두 삭제 (오인 방지)
+            txt_clean = regex_cas_ec_kill.sub(" ", txt)
             
             cn_val = ""
             
             if mode == "HP(K)":
-                # HP: CAS 삭제 후 남은 텍스트에서 숫자 범위 또는 단일 숫자 추출
-                m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_for_conc)
+                # HP: 남은 텍스트에서 - 또는 ~ 범위 찾기
+                m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_clean)
                 if m_range:
                     s, e = m_range.group(1), m_range.group(2)
                     if s == "1": s = "0"
                     cn_val = f"{s} ~ {e}"
                 else:
-                    m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_for_conc)
+                    m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_clean)
                     if m_single:
                         try:
                             if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
                         except: pass
-            
             else:
-                # [CFF] CAS 삭제 후 남은 텍스트에서 "~" 또는 "-" 범위 추출 (CFF는 ~ 우선)
-                # 정규식: 숫자 ~ 숫자 또는 숫자 - 숫자
-                conc = regex_conc.search(txt_for_conc)
-                if conc:
-                    s, e = conc.group(1), conc.group(2)
+                # [CFF] "~" 형식만 엄격하게 찾음 (사용자 요청)
+                m_tilde = regex_tilde_range.search(txt_clean)
+                if m_tilde:
+                    s, e = m_tilde.group(1), m_tilde.group(2)
                     if s == "1": s = "0"
-                    # [핵심] CFF는 무조건 "~" 형식으로 출력
                     cn_val = f"{s} ~ {e}"
-                elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt_for_conc):
-                    # 범위 없으면 단일 숫자
-                    m = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_for_conc)
-                    cn_val = m.group(1)
+                
+                # CFF는 단일 숫자나 다른 형식은 무시 (오류 방지)
             
-            # [공통] CAS가 있거나 함유량이 있으면 추가
+            # CAS나 함유량이 하나라도 있으면 추가
             if c_val or cn_val:
-                # [공통] 소수점 필터링
                 if "." in cn_val: continue
                 result["composition_data"].append((c_val, cn_val))
 
@@ -1070,7 +1039,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! CFF 함유량 로직 복구 완료.")
+                    st.success("완료! CFF CAS/EC 완벽 제거 및 함유량 형식 준수.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
