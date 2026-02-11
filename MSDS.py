@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (int resize 오류 해결판)")
+st.title("MSDS 양식 변환기 (최종 수정: 변수 참조 오류 해결)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -141,7 +141,7 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수] - HP/CFF 이원화
+# [2. 이미지 함수] - HP/CFF 이원화 유지
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
     try:
@@ -158,7 +158,7 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 기존 확정 로직 (32x32)"""
+    """[CFF전용] 확정 로직"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -195,7 +195,6 @@ def get_reference_images():
         return ref_images, True
     except: return {}, False
 
-# [이미지 필터] - HP 전용
 def is_blue_dominant(pil_img):
     try:
         img = pil_img.resize((50, 50)).convert('RGB')
@@ -215,11 +214,9 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
-    # HP 계열 (K, E)
-    if "HP" in mode:
+    if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
         threshold = 80
-    # CFF 계열 (K, E)
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -227,7 +224,7 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     try:
         src_arr = np.array(src_norm, dtype='int16')
         for name, ref_img in ref_images.items():
-            if "HP" in mode:
+            if mode == "HP(K)":
                 ref_norm = normalize_image_smart(ref_img)
             else:
                 ref_norm = normalize_image_legacy(ref_img)
@@ -238,8 +235,10 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
                 best_score = diff
                 best_name = name
         
-        if best_score < threshold: return best_name, best_score
-        else: return None, None
+        if best_score < threshold:
+            return best_name, best_score
+        else:
+            return None, None
     except: return None, None
 
 def extract_number(filename):
@@ -251,7 +250,6 @@ def extract_number(filename):
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
-    # 국문/영문 공통 노이즈 제거 (영문 키워드 추가 필요 시 여기에)
     noise_regexs = [
         r'^\s*\d+\s*/\s*\d+\s*$', r'물질안전보건자료', r'Material Safety Data Sheet', 
         r'PAGE', r'Ver\.\s*:?\s*\d+\.?\d*', r'발행일\s*:?.*', r'Date of issue',
@@ -295,7 +293,6 @@ def get_clustered_lines(doc):
     return all_lines
 
 def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
-    # [CFF(E) TODO] 영문 키워드 처리를 위해 추후 수정 필요할 수 있음
     start_idx = -1; end_idx = -1
     clean_start_kw = start_kw.replace(" ", "")
     for i, line in enumerate(all_lines):
@@ -554,7 +551,8 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
                             try:
-                                if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
+                                if float(m_single.group(1)) <= 100:
+                                    cn_val = m_single.group(1)
                             except: pass
             else:
                 cas_found = regex_cas_ec_kill.findall(txt)
@@ -903,7 +901,22 @@ with col_center:
                                 for img_info in image_list:
                                     xref = img_info[0]
                                     
-                                    # [HP(K) 필터] - 위치 무시하고 일단 수집 (나중에 색상/모양으로 거름)
+                                    # [HP(K) 필터]
+                                    if option == "HP(K)" and page_index == 0:
+                                        try:
+                                            page = doc[page_index]
+                                            rect = page.get_image_bbox(img_info)
+                                            # 상단 15% (로고 영역)만 제외
+                                            if rect.y1 < (page.rect.height * 0.15): continue
+                                            
+                                            # 2. 모양 필터 (정사각형 아님 제거) - HP 전용
+                                            width = rect.x1 - rect.x0
+                                            height = rect.y1 - rect.y0
+                                            if not is_square_shaped(width, height):
+                                                continue
+                                            
+                                        except: continue
+                                    
                                     try:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
@@ -911,11 +924,6 @@ with col_center:
                                         # 1. 색상 필터 (파란색 로고 제거) - HP 전용
                                         if option == "HP(K)":
                                             if is_blue_dominant(pil_img):
-                                                continue
-                                            
-                                            # 2. 모양 필터 (정사각형 아님 제거) - HP 전용
-                                            w, h = pil_img.size
-                                            if not is_square_shaped(w, h):
                                                 continue
 
                                         # 매칭 수행
@@ -952,8 +960,8 @@ with col_center:
                                     if key not in final_images_map:
                                         final_images_map[key] = (img, 0)
 
-                            # 딕셔너리를 리스트로 변환 및 정렬 (이미지 객체만 추출)
-                            final_sorted_imgs = [item[0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
+                            # 딕셔너리를 리스트로 변환 및 정렬 (이미지 객체만 추출 - 수정 완료)
+                            final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
                             
                             if final_sorted_imgs:
                                 unit_size = 67 
@@ -1000,7 +1008,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! HP 정밀 필터링 & CFF 보존.")
+                    st.success("완료! 변수 참조 오류 해결 & CFF 확정.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
