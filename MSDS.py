@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (최종 안정화 버전)")
+st.title("MSDS 양식 변환기 (문법 오류 긴급 수정)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -27,14 +27,13 @@ ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [1. 엑셀/유틸 함수 정의] - 최상단 배치 (NameError 방지)
+# [1. 엑셀/유틸 함수 정의] - 최상단 배치
 # --------------------------------------------------------------------------
 def safe_write_force(ws, row, col, value, center=False):
     """안전하게 셀에 값을 쓰는 함수"""
     cell = ws.cell(row=row, column=col)
     try: cell.value = value
     except AttributeError:
-        # 병합된 셀일 경우 병합 해제 후 입력 시도
         try:
             for rng in list(ws.merged_cells.ranges):
                 if cell.coordinate in rng:
@@ -319,7 +318,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             first_line['text'] = parts[1].strip() if len(parts) > 1 else ""
         else: first_line['text'] = ""
     
-    target_lines = []; 
+    target_lines = []
     if first_line['text'].strip(): target_lines.append(first_line)
     target_lines.extend(target_lines_raw[1:])
     if not target_lines: return ""
@@ -488,6 +487,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P4"): result["p_stor"].append(code)
             elif p.startswith("P5"): result["p_disp"].append(code)
 
+    # [함유량 추출]
     regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
     regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     regex_cas_ec_kill = re.compile(r'\b\d{2,7}\s*-\s*\d{2,3}\s*-\s*\d\b')
@@ -517,7 +517,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                     else:
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
-                            try: if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
+                            try:
+                                # [수정] 올바른 들여쓰기 적용
+                                if float(m_single.group(1)) <= 100:
+                                    cn_val = m_single.group(1)
                             except: pass
             else:
                 cas_found = regex_cas_ec_kill.findall(txt)
