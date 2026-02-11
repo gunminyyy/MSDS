@@ -16,11 +16,11 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (위치무시 & 점수기반 필터링)")
+st.title("MSDS 양식 변환기 (비율 검사 & 절대평가)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [1. 함수 정의 구역] - 최상단 배치
+# [1. 유틸리티 함수]
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -141,10 +141,9 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수] - HP/CFF 이원화
+# [2. 이미지 처리 함수] - HP/CFF 이원화
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
-    """[HP전용] 이미지 여백 제거"""
     try:
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -159,7 +158,7 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 기존 확정 로직 (32x32)"""
+    """[CFF전용] 확정 로직"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -196,14 +195,13 @@ def get_reference_images():
         return ref_images, True
     except: return {}, False
 
-# [핵심] Score 함께 반환
 def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
     if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
-        threshold = 85 # [HP] 기준을 매우 넉넉하게 잡음 (나중에 점수로 거르기 위해)
+        threshold = 80 # 절대평가 기준 (80점 이내면 통과)
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -222,7 +220,6 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
                 best_score = diff
                 best_name = name
         
-        # [CFF/HP 공통] Score 함께 반환 (CFF에서는 Score 무시하면 됨)
         if best_score < threshold:
             return best_name, best_score
         else:
@@ -516,7 +513,8 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
                             try:
-                                if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
+                                if float(m_single.group(1)) <= 100:
+                                    cn_val = m_single.group(1)
                             except: pass
             else:
                 cas_found = regex_cas_ec_kill.findall(txt)
@@ -856,7 +854,7 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지 처리 - HP(K) 필터 단순화]
+                            # [이미지 처리 - HP(K) 필터 최적화]
                             collected_pil_images = []
                             scan_limit = min(1, len(doc)) 
                             
@@ -870,8 +868,17 @@ with col_center:
                                         try:
                                             page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
-                                            # 상단 15% (로고)만 제외, 하단 제한 해제
+                                            
+                                            # 1. 상단 15% (로고 영역)만 제외
                                             if rect.y1 < (page.rect.height * 0.15): continue
+                                            
+                                            # 2. [추가] 너무 넓거나 좁은 이미지 제외 (GHS는 정사각형에 가까움)
+                                            # 가로세로 비율이 0.8 ~ 1.2 사이가 아니면 로고일 확률 높음
+                                            width = rect.x1 - rect.x0
+                                            height = rect.y1 - rect.y0
+                                            aspect_ratio = width / height
+                                            if not (0.8 < aspect_ratio < 1.2): continue
+                                            
                                         except: continue
                                     
                                     try:
@@ -880,7 +887,7 @@ with col_center:
                                         
                                         # 매칭 수행 (Score 포함 반환)
                                         if loaded_refs:
-                                            # HP일 때 Threshold를 85로 넉넉하게 잡음 (점수로 거를 예정)
+                                            # HP일 때 Threshold를 80으로 잡음 (절대평가 기준)
                                             matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
                                             
                                             # 매칭 성공 시
@@ -889,27 +896,19 @@ with col_center:
                                                 collected_pil_images.append((extract_number(matched_name), clean_img, score))
                                     except: continue
                             
-                            # [상대적 점수 필터링 (HP 전용)]
+                            # [HP 전용 중복 제거 및 최적화]
                             final_images_map = {}
                             
                             if option == "HP(K)" and collected_pil_images:
-                                # 1. 가장 좋은 점수(Best Match) 찾기
-                                min_score = min(item[2] for item in collected_pil_images)
-                                
                                 for key, img, score in collected_pil_images:
-                                    # 2. 1등 점수 대비 +25점 이내인 것만 통과 (짝퉁 제거)
-                                    # 기준을 조금 더 넉넉하게(25) 잡아서 진짜 2등이 탈락하는 일 방지
-                                    if score > min_score + 25: 
-                                        continue
-                                    
-                                    # 3. 중복 제거 (더 좋은 점수 우선)
+                                    # 같은 그림이 여러 번 나왔으면 점수가 더 좋은(낮은) 것만 유지
                                     if key not in final_images_map:
                                         final_images_map[key] = (img, score)
                                     else:
                                         if score < final_images_map[key][1]:
                                             final_images_map[key] = (img, score)
                             else:
-                                # CFF는 기존 방식대로 (필터링 없음)
+                                # CFF는 기존 방식대로
                                 for key, img, _ in collected_pil_images:
                                     if key not in final_images_map:
                                         final_images_map[key] = (img, 0)
