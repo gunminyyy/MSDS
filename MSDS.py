@@ -4,7 +4,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, Border, Side
 from openpyxl.cell.cell import MergedCell
 from openpyxl.drawing.image import Image as XLImage
-from PIL import Image as PILImage, ImageChops # ImageChops 추가
+from PIL import Image as PILImage, ImageChops
 import io
 import re
 import os
@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (Auto-Crop 적용: 그림문자 오류 해결)")
+st.title("MSDS 양식 변환기 (XML/그림문자 최종 해결)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -27,12 +27,10 @@ ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [함수] 이미지 처리 (Auto-Crop 기능 추가)
+# [함수] 이미지 처리
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
-    """이미지의 불필요한 여백을 자동으로 제거"""
     try:
-        # 알파 채널이 있는 경우 흰색 배경으로 병합
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
             if pil_img.mode == 'RGBA':
@@ -40,11 +38,7 @@ def auto_crop(pil_img):
             else:
                 bg.paste(pil_img)
             pil_img = bg
-        
-        # 색상 반전 (흰색 배경을 검은색으로, 내용을 흰색으로)
-        # 내용이 있는 부분(Bounding Box)을 찾음
         bbox = ImageChops.invert(pil_img).getbbox()
-        
         if bbox:
             return pil_img.crop(bbox)
         return pil_img
@@ -53,10 +47,7 @@ def auto_crop(pil_img):
 
 def normalize_image(pil_img):
     try:
-        # 1. 먼저 여백을 잘라냅니다 (이게 핵심)
         cropped_img = auto_crop(pil_img)
-        
-        # 2. 그 후 규격화 (크기를 64x64로 키워 정확도 향상)
         return cropped_img.resize((64, 64)).convert('L')
     except:
         return pil_img.resize((64, 64)).convert('L')
@@ -83,18 +74,13 @@ def find_best_match_name(src_img, ref_images):
     try:
         src_norm = normalize_image(src_img)
         src_arr = np.array(src_norm, dtype='int16')
-        
         for name, ref_img in ref_images.items():
-            # 참조 이미지도 동일하게 전처리
             ref_norm = normalize_image(ref_img)
             ref_arr = np.array(ref_norm, dtype='int16')
-            
             diff = np.mean(np.abs(src_arr - ref_arr))
             if diff < best_score:
                 best_score = diff
                 best_name = name
-        
-        # 유사도 기준 (Auto-Crop 덕분에 더 엄격하게 잡아도 됨)
         if best_score < 60: return best_name
         else: return None
     except: return None
@@ -391,7 +377,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     
     full_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
     
-    # [신호어 추출]
     signal_found = False
     try:
         start_sig = full_text_hp.find("신호어")
@@ -800,6 +785,12 @@ with col_center:
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
                             dest_ws = dest_wb.active
 
+                            # 1. 외부 연결 끊기 (XML 오류 방지 핵심)
+                            dest_wb.external_links = []
+
+                            # 2. 기존 그림 제거 (초기화) - 오류 없이 안전하게
+                            dest_ws._images = []
+
                             # 초기화 (수식 삭제)
                             for row in dest_ws.iter_rows():
                                 for cell in row:
@@ -1011,7 +1002,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 이미지 로직 CFF 원복 & HP 로고컷.")
+                    st.success("완료! 그림문자 교체 & 외부연결 오류 해결.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
