@@ -16,17 +16,18 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (HP 이미지 필터 단순화)")
+st.title("MSDS 양식 변환기 (위치무시 & 전수비교 확정판)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [1. 함수 정의 구역] - 최상단 배치
+# [1. 함수 정의 구역] - 최상단 배치 (에러 방지)
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 def safe_write_force(ws, row, col, value, center=False):
+    """안전하게 셀에 값을 쓰는 함수"""
     cell = ws.cell(row=row, column=col)
     try: cell.value = value
     except AttributeError:
@@ -38,6 +39,7 @@ def safe_write_force(ws, row, col, value, center=False):
                     break
             cell.value = value
         except: pass
+    
     if cell.font.name != '굴림': cell.font = FONT_STYLE
     if center: cell.alignment = ALIGN_CENTER
     else: cell.alignment = ALIGN_LEFT
@@ -202,8 +204,10 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     
     if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
-        # [HP] Threshold 완화: Auto-Crop 후 미세한 차이는 허용
-        threshold = 70 
+        # [HP] Threshold 대폭 완화: 75
+        # 이유: Auto-Crop을 해도 원본 화질이 나쁘면 차이가 클 수 있음.
+        # 로고는 어차피 생김새가 완전히 다르므로 75 정도면 걸러짐.
+        threshold = 75 
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -513,9 +517,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
                             try:
-                                # [SyntaxError Fix]
-                                if float(m_single.group(1)) <= 100:
-                                    cn_val = m_single.group(1)
+                                if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
                             except: pass
             else:
                 cas_found = regex_cas_ec_kill.findall(txt)
@@ -856,6 +858,7 @@ with col_center:
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
                             # [이미지 처리 - HP(K) 필터 단순화]
+                            # 위치 계산 로직 제거 -> 1페이지 전수 조사 & 시각적 필터링
                             collected_pil_images = []
                             scan_limit = min(1, len(doc)) 
                             
@@ -864,15 +867,8 @@ with col_center:
                                 for img_info in image_list:
                                     xref = img_info[0]
                                     
-                                    # [HP(K) 필터]
-                                    # 복잡한 좌표 검색 제거 -> 안전한 Top 15% 컷만 적용
-                                    if option == "HP(K)" and page_index == 0:
-                                        try:
-                                            page = doc[page_index]
-                                            rect = page.get_image_bbox(img_info)
-                                            # 상단 15% (약 120px) 이내는 로고로 간주하여 차단
-                                            if rect.y1 < (page.rect.height * 0.15): continue
-                                        except: continue
+                                    # [HP(K) 필터] - 좌표 계산 완전히 제거하고 1페이지 전체 스캔
+                                    # find_best_match_name 함수가 로고를 알아서 걸러줍니다.
                                     
                                     try:
                                         base_image = doc.extract_image(xref)
@@ -880,6 +876,7 @@ with col_center:
                                         matched_name = None
                                         
                                         if loaded_refs:
+                                            # Threshold를 완화한 HP 전용 로직 적용
                                             matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
                                         
                                         if matched_name:
