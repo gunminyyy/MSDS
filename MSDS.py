@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (CFF 분류 제목 제거)")
+st.title("MSDS 양식 변환기")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -684,8 +684,6 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
     with col1:
         master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
         loaded_refs, folder_exists = get_reference_images()
-        if folder_exists and loaded_refs:
-            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
         elif not folder_exists:
             st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
@@ -703,7 +701,7 @@ if 'converted_files' not in st.session_state:
     st.session_state['download_data'] = {}
 
 with col_left:
-    st.subheader("3. 원본 파일 업로드")
+    st.subheader("원본 파일 업로드")
     uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
 
 with col_center:
@@ -1010,7 +1008,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! HP 정밀 필터링 & CFF 보존.")
+                    st.success("완료!")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
@@ -1028,3 +1026,4 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
+
