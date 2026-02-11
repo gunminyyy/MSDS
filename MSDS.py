@@ -693,7 +693,7 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
         template_file = st.file_uploader("양식 파일 (GHS MSDS 양식)", type="xlsx")
 
 product_name_input = st.text_input("제품명 입력")
-option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
+option = st.selectbox("적용할 양식(현재 국문만 가능)", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 st.write("") 
 
 col_left, col_center, col_right = st.columns([4, 2, 4])
@@ -1028,6 +1028,7 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
+
 
 
 
