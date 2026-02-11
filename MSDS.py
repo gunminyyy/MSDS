@@ -15,7 +15,7 @@ import math
 from datetime import datetime
 
 # 1. 페이지 설정
-st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
+st.set_page_config(page_title="MSDS 양식 변환기", layout="wide")
 st.title("MSDS 양식 변환기")
 st.markdown("---")
 
@@ -1028,6 +1028,7 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
+
 
 
 
