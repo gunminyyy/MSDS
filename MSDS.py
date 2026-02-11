@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (CFF/HP 로직 완전 분리)")
+st.title("MSDS 양식 변환기 (CFF CAS 분리 적용)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -27,10 +27,10 @@ ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [함수] 이미지 처리 (이원화)
+# [함수] 이미지 처리
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
-    """[HP전용] 이미지의 불필요한 여백 제거"""
+    """이미지의 불필요한 여백 제거"""
     try:
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -88,28 +88,22 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
-    # [로직 분기]
     if mode == "HP(K)":
-        # HP: Auto-Crop 사용, 임계값 60, 해상도 64
         src_norm = normalize_image_smart(src_img)
         threshold = 60
     else:
-        # CFF: 기존 방식(32x32), 임계값 65
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
 
     try:
         src_arr = np.array(src_norm, dtype='int16')
         for name, ref_img in ref_images.items():
-            
-            # 참조 이미지도 모드에 따라 다르게 처리
             if mode == "HP(K)":
                 ref_norm = normalize_image_smart(ref_img)
             else:
                 ref_norm = normalize_image_legacy(ref_img)
                 
             ref_arr = np.array(ref_norm, dtype='int16')
-            
             diff = np.mean(np.abs(src_arr - ref_arr))
             if diff < best_score:
                 best_score = diff
@@ -411,11 +405,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     
     full_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
     
-    # [신호어 추출 - 로직 분리]
     signal_found = False
     
     if mode == "HP(K)":
-        # HP: 족집게 방식 우선
         try:
             start_sig = full_text_hp.find("신호어")
             end_sig = full_text_hp.find("유해", start_sig)
@@ -427,7 +419,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                     signal_found = True
         except: pass
     
-    # CFF는 기존 방식만, HP는 족집게 실패시 기존 방식 백업
     if not signal_found:
         for line in full_text_hp.split('\n'):
             if "신호어" in line:
@@ -473,10 +464,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P4"): result["p_stor"].append(code)
             elif p.startswith("P5"): result["p_disp"].append(code)
 
-    # [함유량 추출 - 로직 분리]
+    # [함유량 추출 - 로직 분리 및 CFF 보완]
     regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
     regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
-    regex_cas_simple = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b') # CFF용
+    regex_cas_simple = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b') 
     
     in_comp = False
     for line in all_lines:
@@ -487,7 +478,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             if re.search(r'^\d+\.\d+', txt): continue 
             
             if mode == "HP(K)":
-                # HP: CAS 선삭제 후 추출
                 cas_found = regex_cas_strict.findall(txt)
                 if cas_found:
                     c_val = cas_found[0].replace(" ", "")
@@ -511,18 +501,22 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                     result["composition_data"].append((c_val, cn_val))
             
             else:
-                # CFF: 기존 로직 (동시 추출)
+                # [CFF] CAS 선삭제 로직 적용
                 cas = regex_cas_simple.search(txt)
-                conc = regex_conc.search(txt)
                 if cas:
                     c_val = cas.group(1).replace(" ", "")
+                    # CAS 제거
+                    txt_masked = txt.replace(cas.group(0), " " * len(cas.group(0)))
+                    
                     cn_val = ""
+                    # 제거된 텍스트에서 함유량 찾기
+                    conc = regex_conc.search(txt_masked)
                     if conc:
                         s, e = conc.group(1), conc.group(2)
                         if s == "1": s = "0"
                         cn_val = f"{s} ~ {e}"
-                    elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt):
-                        m = re.search(r'\b(\d+(?:\.\d+)?)\b', txt)
+                    elif re.search(r'\b(\d+(?:\.\d+)?)\b', txt_masked):
+                        m = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_masked)
                         cn_val = m.group(1)
                     
                     if "." in cn_val: continue
@@ -1063,7 +1057,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! CFF/HP 로직 완전 이원화 적용.")
+                    st.success("완료! CFF CAS 분리 및 로직 이원화 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
