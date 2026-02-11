@@ -685,7 +685,7 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
         master_data_file = st.file_uploader("ingredients CAS and EC 통합 데이터", type="xlsx")
         loaded_refs, folder_exists = get_reference_images()
         if folder_exists and loaded_refs:
-            st.success(f"✅ 이미지 {len(loaded_refs)}개 로드됨")
+            st.success(f"✅ 신호어 {len(loaded_refs)}개 로드됨")
         elif not folder_exists:
             st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
@@ -1010,7 +1010,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료!")
+                    st.success("변환 완료")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
@@ -1028,6 +1028,7 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
+
 
 
 
