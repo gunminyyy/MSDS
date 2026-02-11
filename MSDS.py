@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (최종 수정: 변수 참조 오류 해결)")
+st.title("MSDS 양식 변환기 (CFF 분류 제목 제거)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -141,7 +141,7 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수] - HP/CFF 이원화 유지
+# [2. 이미지 함수]
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
     try:
@@ -487,7 +487,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 if "공급자" not in l and "회사명" not in l:
                     clean_l = l.replace("-", "").strip()
                     if clean_l: result["hazard_cls"].append(clean_l)
-    else: 
+    else: # CFF(K) - 수정된 로직
         lines_hp = full_text_hp.split('\n')
         state = 0
         for l in lines_hp:
@@ -499,9 +499,12 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 state = 0
                 continue
             if state == 1 and l.strip():
+                # [CFF(K) 수정] 헤더 텍스트만 쏙 빼고 데이터만 남김
                 if "가.유해성" in l_ns and "분류" in l_ns:
-                    check_header = re.sub(r'[가-하][\.\s]*유해성[\s\.]*위험성[\s\.]*분류', '', l).strip()
-                    if not check_header: continue 
+                    cleaned_text = re.sub(r'^[가-하][\.\s]*유해성[\s\W]*위험성[\s\W]*분류[:\s]*', '', l).strip()
+                    if not cleaned_text: continue # 헤더만 있으면 스킵
+                    l = cleaned_text # 내용이 있으면 교체해서 사용
+                
                 if "공급자" not in l and "회사명" not in l:
                     result["hazard_cls"].append(l.strip())
 
@@ -551,8 +554,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
                             try:
-                                if float(m_single.group(1)) <= 100:
-                                    cn_val = m_single.group(1)
+                                if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
                             except: pass
             else:
                 cas_found = regex_cas_ec_kill.findall(txt)
@@ -892,7 +894,7 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지 처리 - HP(K) 필터 단순화 (무조건 수집 -> 후처리 필터)]
+                            # [이미지 처리 - HP(K) 필터 단순화]
                             collected_pil_images = []
                             scan_limit = min(1, len(doc)) 
                             
@@ -960,7 +962,7 @@ with col_center:
                                     if key not in final_images_map:
                                         final_images_map[key] = (img, 0)
 
-                            # 딕셔너리를 리스트로 변환 및 정렬 (이미지 객체만 추출 - 수정 완료)
+                            # 딕셔너리를 리스트로 변환 및 정렬 (이미지 객체만 추출)
                             final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
                             
                             if final_sorted_imgs:
@@ -1008,7 +1010,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 변수 참조 오류 해결 & CFF 확정.")
+                    st.success("완료! HP 정밀 필터링 & CFF 보존.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
