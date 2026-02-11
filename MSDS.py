@@ -16,11 +16,11 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (색상/형태 기반 로고 제거)")
+st.title("MSDS 양식 변환기 (CFF 분류 섹션 범위 확장)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [1. 유틸리티 함수]
+# [1. 함수 정의 구역] - 최상단 배치
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -141,44 +141,9 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 필터링 함수] - HP 전용 (색상/비율)
-# --------------------------------------------------------------------------
-def is_blue_dominant(pil_img):
-    """이미지에 파란색 성분이 강한지 확인 (로고 판별용)"""
-    try:
-        # 계산 속도를 위해 작게 리사이즈
-        img = pil_img.resize((50, 50)).convert('RGB')
-        data = np.array(img)
-        
-        # R, G, B 채널 분리
-        r = data[:,:,0].astype(int)
-        g = data[:,:,1].astype(int)
-        b = data[:,:,2].astype(int)
-        
-        # 파란색이 빨강, 초록보다 월등히 높은 픽셀 (Blue Dominant Pixel)
-        # B가 R보다 30 이상 크고, G보다 30 이상 큰 픽셀
-        blue_mask = (b > r + 30) & (b > g + 30)
-        
-        # 전체 픽셀 중 파란색 픽셀 비율
-        blue_ratio = np.sum(blue_mask) / (50 * 50)
-        
-        # 파란색 픽셀이 5% 이상이면 파란색 로고로 간주
-        return blue_ratio > 0.05
-    except:
-        return False
-
-def is_square_shaped(width, height):
-    """가로세로 비율이 정사각형에 가까운지 확인 (GHS 판별용)"""
-    if height == 0: return False
-    ratio = width / height
-    # 0.8 ~ 1.2 사이면 정사각형으로 인정
-    return 0.8 < ratio < 1.2
-
-# --------------------------------------------------------------------------
-# [3. 이미지 전처리 함수]
+# [2. 이미지 함수] - HP(K) / CFF(K) 확정 로직
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
-    """[HP전용] 이미지 여백 제거"""
     try:
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -193,7 +158,7 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 기존 확정 로직 (32x32)"""
+    """[CFF전용] 확정 로직 (32x32)"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -230,13 +195,28 @@ def get_reference_images():
         return ref_images, True
     except: return {}, False
 
+def is_blue_dominant(pil_img):
+    try:
+        img = pil_img.resize((50, 50)).convert('RGB')
+        data = np.array(img)
+        r = data[:,:,0].astype(int); g = data[:,:,1].astype(int); b = data[:,:,2].astype(int)
+        blue_mask = (b > r + 30) & (b > g + 30)
+        blue_ratio = np.sum(blue_mask) / (50 * 50)
+        return blue_ratio > 0.05
+    except: return False
+
+def is_square_shaped(width, height):
+    if height == 0: return False
+    ratio = width / height
+    return 0.8 < ratio < 1.2
+
 def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
-    if mode == "HP(K)":
+    if "HP" in mode:
         src_norm = normalize_image_smart(src_img)
-        threshold = 70 
+        threshold = 80
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -244,7 +224,7 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     try:
         src_arr = np.array(src_norm, dtype='int16')
         for name, ref_img in ref_images.items():
-            if mode == "HP(K)":
+            if "HP" in mode:
                 ref_norm = normalize_image_smart(ref_img)
             else:
                 ref_norm = normalize_image_legacy(ref_img)
@@ -255,24 +235,22 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
                 best_score = diff
                 best_name = name
         
-        if best_score < threshold:
-            return best_name
-        else:
-            return None
-    except: return None
+        if best_score < threshold: return best_name, best_score
+        else: return None, None
+    except: return None, None
 
 def extract_number(filename):
     nums = re.findall(r'\d+', filename)
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [4. 파서 함수]
+# [3. 파서 함수]
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
     noise_regexs = [
         r'^\s*\d+\s*/\s*\d+\s*$', r'물질안전보건자료', r'Material Safety Data Sheet', 
-        r'PAGE', r'Ver\.\s*:?\s*\d+\.?\d*', r'발행일\s*:?.*', 
+        r'PAGE', r'Ver\.\s*:?\s*\d+\.?\d*', r'발행일\s*:?.*', r'Date of issue',
         r'주식회사\s*고려.*', r'Cff', r'Corea\s*flavors.*', r'제\s*품\s*명\s*:?.*'
     ]
     global_y_offset = 0
@@ -356,14 +334,18 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     
     if mode == "HP(K)":
         garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 방법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제", "- 색", "(및 부적절한) 소화제", "특정 유해성", "보호하기 위해 필요한 조치 사항 및 보호구", "저장 방법"]
-    else: 
+    elif mode == "CFF(K)": 
         garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 방법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제"]
-    
+    else: 
+        garbage_heads = []
+
     sensitive_garbage_regex = [r"^시\s+", r"^또는\s+", r"^의\s+"]
+    
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
         if mode == "HP(K)": txt = txt.lstrip("-").strip()
+        
         for _ in range(3):
             changed = False
             for gb in garbage_heads:
@@ -386,6 +368,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     JOSAS = ['을', '를', '이', '가', '은', '는', '의', '와', '과', '에', '로', '서']
     SPACERS_END = ['고', '며', '여', '해', '나', '면', '니', '등', '및', '또는', '경우', ',', ')', '속']
     SPACERS_START = ['및', '또는', '(', '참고']
+    
     final_text = ""
     if len(cleaned_lines) > 0:
         final_text = cleaned_lines[0]['text']
@@ -436,7 +419,20 @@ def parse_sec8_hp_content(text):
     if not valid_lines: return "자료없음"
     return "\n".join(valid_lines)
 
+# --------------------------------------------------------------------------
+# [메인 파서] - CFF(E) 분기 추가
+# --------------------------------------------------------------------------
 def parse_pdf_final(doc, mode="CFF(K)"):
+    
+    if mode == "CFF(E)":
+        # CFF(E) 로직 (추후 구현)
+        return {
+            "hazard_cls": [], "signal_word": "TEST_CFF_E", "h_codes": [], 
+            "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
+            "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}, "sec14": {}, "sec15": {}
+        }
+
+    # [CFF(K) / HP(K) 기존 확정 로직]
     all_lines = get_clustered_lines(doc)
     
     if mode == "CFF(K)":
@@ -491,14 +487,25 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 if "공급자" not in l and "회사명" not in l:
                     clean_l = l.replace("-", "").strip()
                     if clean_l: result["hazard_cls"].append(clean_l)
-    else:
+    else: # CFF(K) - 수정된 로직
         lines_hp = full_text_hp.split('\n')
         state = 0
         for l in lines_hp:
             l_ns = l.replace(" ", "")
-            if "가.유해성" in l_ns and "분류" in l_ns: state=1; continue
-            if "나.예방조치" in l_ns: state=0; continue
-            if state==1 and l.strip():
+            # [CFF(K) 수정] 2번 제목부터 인식 시작 (범위 확장)
+            if "2.유해성" in l_ns and "위험성" in l_ns: 
+                state = 1
+                continue # 제목 줄 자체는 건너뜀
+            if "나.예방조치" in l_ns: 
+                state = 0
+                continue
+                
+            if state == 1 and l.strip():
+                # [CFF(K) 수정] '가. 유해성 분류' 헤더만 있는 줄은 제외
+                if "가.유해성" in l_ns and "분류" in l_ns:
+                    check_header = re.sub(r'[가-하][\.\s]*유해성[\s\.]*위험성[\s\.]*분류', '', l).strip()
+                    if not check_header: continue # 데이터 없이 헤더만 있으면 스킵
+                
                 if "공급자" not in l and "회사명" not in l:
                     result["hazard_cls"].append(l.strip())
 
@@ -914,28 +921,48 @@ with col_center:
 
                                         # 매칭 수행
                                         if loaded_refs:
-                                            matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                            matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
                                             if matched_name:
                                                 clean_img = loaded_refs[matched_name]
-                                                collected_pil_images.append((extract_number(matched_name), clean_img))
+                                                collected_pil_images.append((extract_number(matched_name), clean_img, score))
                                     except: continue
                             
-                            unique_images = {}
-                            for key, img in collected_pil_images:
-                                if key not in unique_images: unique_images[key] = img
+                            # [상대적 점수 필터링 (HP 전용)]
+                            final_images_map = {}
                             
-                            final_images = sorted(unique_images.items(), key=lambda x: x[0])
-                            sorted_imgs = [item[1] for item in final_images]
+                            if option == "HP(K)" and collected_pil_images:
+                                # 1. 가장 좋은 점수(Best Match) 찾기
+                                min_score = min(item[2] for item in collected_pil_images)
+                                
+                                for key, img, score in collected_pil_images:
+                                    # 2. 1등 점수 대비 +25점 이내인 것만 통과 (짝퉁 제거)
+                                    if score > min_score + 25: 
+                                        continue
+                                    
+                                    # 3. 중복 제거 (더 좋은 점수 우선)
+                                    if key not in final_images_map:
+                                        final_images_map[key] = (img, score)
+                                    else:
+                                        if score < final_images_map[key][1]:
+                                            final_images_map[key] = (img, score)
+                            else:
+                                # CFF는 기존 방식대로 (필터링 없음)
+                                for key, img, _ in collected_pil_images:
+                                    if key not in final_images_map:
+                                        final_images_map[key] = (img, 0)
+
+                            # 딕셔너리를 리스트로 변환 및 정렬
+                            final_sorted_imgs = [item[0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
                             
-                            if sorted_imgs:
+                            if final_sorted_imgs:
                                 unit_size = 67 
                                 icon_size = 60 
                                 padding_top = 4 
                                 padding_left = (unit_size - icon_size) // 2 
-                                total_width = unit_size * len(sorted_imgs)
+                                total_width = unit_size * len(final_sorted_imgs)
                                 total_height = unit_size 
                                 merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                for idx, p_img in enumerate(sorted_imgs):
+                                for idx, p_img in enumerate(final_sorted_imgs):
                                     p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
                                     merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
                                 
@@ -972,7 +999,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 색상/모양 기반 로고 제거 적용.")
+                    st.success("완료! HP 정밀 필터링 & CFF 보존.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
