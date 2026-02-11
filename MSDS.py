@@ -16,19 +16,16 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (문법 오류 긴급 수정)")
+st.title("MSDS 양식 변환기 (좌표 범위 확장 & 오류 해결)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [스타일 및 전역 설정]
+# [1. 함수 정의 구역] - 실행 전 배치
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-# --------------------------------------------------------------------------
-# [1. 엑셀/유틸 함수 정의] - 최상단 배치
-# --------------------------------------------------------------------------
 def safe_write_force(ws, row, col, value, center=False):
     """안전하게 셀에 값을 쓰는 함수"""
     cell = ws.cell(row=row, column=col)
@@ -146,10 +143,9 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수 정의]
+# [2. 이미지 함수]
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
-    """[HP전용] 이미지 여백 제거"""
     try:
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -164,7 +160,6 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 기존 확정 로직 (32x32)"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -178,7 +173,6 @@ def normalize_image_legacy(pil_img):
         return pil_img.resize((32, 32)).convert('L')
 
 def normalize_image_smart(pil_img):
-    """[HP전용] Auto-Crop + 64x64"""
     try:
         cropped_img = auto_crop(pil_img)
         return cropped_img.resize((64, 64)).convert('L')
@@ -235,7 +229,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [3. 텍스트 파서 함수 정의]
+# [3. 파서 함수]
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
@@ -318,7 +312,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             first_line['text'] = parts[1].strip() if len(parts) > 1 else ""
         else: first_line['text'] = ""
     
-    target_lines = []
+    target_lines = []; 
     if first_line['text'].strip(): target_lines.append(first_line)
     target_lines.extend(target_lines_raw[1:])
     if not target_lines: return ""
@@ -487,7 +481,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P4"): result["p_stor"].append(code)
             elif p.startswith("P5"): result["p_disp"].append(code)
 
-    # [함유량 추출]
     regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
     regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     regex_cas_ec_kill = re.compile(r'\b\d{2,7}\s*-\s*\d{2,3}\s*-\s*\d\b')
@@ -518,7 +511,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
                             try:
-                                # [수정] 올바른 들여쓰기 적용
                                 if float(m_single.group(1)) <= 100:
                                     cn_val = m_single.group(1)
                             except: pass
@@ -733,12 +725,10 @@ with col_center:
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
                             dest_ws = dest_wb.active
 
-                            # 1. 외부 연결 끊기 (XML 오류 방지 핵심)
-                            dest_wb.external_links = []
-
-                            # 2. 기존 그림 제거 (초기화)
+                            # 1. 기존 그림 제거 (초기화)
                             dest_ws._images = []
-
+                            
+                            # 2. 초기화 (수식 삭제)
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
@@ -860,20 +850,22 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지 처리 - HP(K) 좌표 기반 / CFF(K) 기존]
+                            # [이미지 처리]
                             collected_pil_images = []
                             scan_limit = min(1, len(doc)) 
                             
                             page = doc[0]
-                            # HP 전용 좌표 구간 설정
                             hp_valid_area = None
                             if option == "HP(K)":
                                 try:
+                                    # [핵심] "그림문자" 글자의 맨 위(y0)부터 "신호어" 맨 위(y0)까지를 범위로 잡음
                                     rects_start = page.search_for("그림문자")
                                     rects_end = page.search_for("신호어")
+                                    
                                     if rects_start and rects_end:
-                                        # 그림문자 끝 ~ 신호어 시작 사이
-                                        y_min = rects_start[0].y1
+                                        # 시작점을 글자의 Top(y0)으로 설정하여, 글자와 나란한 이미지도 포함되게 함
+                                        # 끝점은 신호어의 Top(y0)으로 설정하여, 신호어 침범 방지
+                                        y_min = rects_start[0].y0 - 5 # 약간의 여유(buffer)
                                         y_max = rects_end[0].y0
                                         hp_valid_area = (y_min, y_max)
                                 except: pass
@@ -882,18 +874,17 @@ with col_center:
                             for img_info in image_list:
                                 xref = img_info[0]
                                 
-                                # [HP(K) 필터링]
                                 if option == "HP(K)":
                                     if hp_valid_area:
                                         try:
                                             rect = page.get_image_bbox(img_info)
+                                            # 이미지의 중심점(mid_y)이 범위 안에 있는지 확인
                                             img_mid_y = (rect.y0 + rect.y1) / 2
-                                            # 좌표 구간 안에 없으면 skip
                                             if not (hp_valid_area[0] < img_mid_y < hp_valid_area[1]):
                                                 continue
                                         except: continue
                                     else:
-                                        # 키워드 못 찾았을 경우 안전장치 (상단 10% 제외)
+                                        # Fallback: 상단 10% 제외
                                         try:
                                             rect = page.get_image_bbox(img_info)
                                             if rect.y1 < (page.rect.height * 0.10): continue
@@ -936,6 +927,9 @@ with col_center:
                                 img_byte_arr.seek(0)
                                 dest_ws.add_image(XLImage(img_byte_arr), 'B23')
 
+                            # 3. 외부 연결 끊기 (저장 직전 최종 적용)
+                            dest_wb.external_links = []
+
                             output = io.BytesIO()
                             dest_wb.save(output)
                             output.seek(0)
@@ -961,7 +955,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! HP 좌표기반 이미지 추출 & 엑셀 오류 해결.")
+                    st.success("완료! 범위확장 & 오류해결.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
