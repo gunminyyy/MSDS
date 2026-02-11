@@ -16,18 +16,17 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (좌표 범위 확장 & 오류 해결)")
+st.title("MSDS 양식 변환기 (HP 이미지 필터 단순화)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [1. 함수 정의 구역] - 실행 전 배치
+# [1. 함수 정의 구역] - 최상단 배치
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 def safe_write_force(ws, row, col, value, center=False):
-    """안전하게 셀에 값을 쓰는 함수"""
     cell = ws.cell(row=row, column=col)
     try: cell.value = value
     except AttributeError:
@@ -39,7 +38,6 @@ def safe_write_force(ws, row, col, value, center=False):
                     break
             cell.value = value
         except: pass
-    
     if cell.font.name != '굴림': cell.font = FONT_STYLE
     if center: cell.alignment = ALIGN_CENTER
     else: cell.alignment = ALIGN_LEFT
@@ -143,9 +141,10 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수]
+# [2. 이미지 함수] - HP/CFF 이원화
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
+    """[HP전용] 이미지 여백 제거"""
     try:
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -160,6 +159,7 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
+    """[CFF전용] 기존 확정 로직 (32x32)"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -173,6 +173,7 @@ def normalize_image_legacy(pil_img):
         return pil_img.resize((32, 32)).convert('L')
 
 def normalize_image_smart(pil_img):
+    """[HP전용] Auto-Crop + 64x64"""
     try:
         cropped_img = auto_crop(pil_img)
         return cropped_img.resize((64, 64)).convert('L')
@@ -201,7 +202,8 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     
     if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
-        threshold = 65 
+        # [HP] Threshold 완화: Auto-Crop 후 미세한 차이는 허용
+        threshold = 70 
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -511,6 +513,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
                             try:
+                                # [SyntaxError Fix]
                                 if float(m_single.group(1)) <= 100:
                                     cn_val = m_single.group(1)
                             except: pass
@@ -725,10 +728,12 @@ with col_center:
                             dest_wb = load_workbook(io.BytesIO(template_file.read()))
                             dest_ws = dest_wb.active
 
-                            # 1. 기존 그림 제거 (초기화)
+                            # 1. 외부 연결 끊기 (XML 오류 방지 핵심)
+                            dest_wb.external_links = []
+
+                            # 2. 기존 그림 제거 (초기화)
                             dest_ws._images = []
-                            
-                            # 2. 초기화 (수식 삭제)
+
                             for row in dest_ws.iter_rows():
                                 for cell in row:
                                     if isinstance(cell, MergedCell): continue
@@ -850,58 +855,37 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지 처리]
+                            # [이미지 처리 - HP(K) 필터 단순화]
                             collected_pil_images = []
                             scan_limit = min(1, len(doc)) 
                             
-                            page = doc[0]
-                            hp_valid_area = None
-                            if option == "HP(K)":
-                                try:
-                                    # [핵심] "그림문자" 글자의 맨 위(y0)부터 "신호어" 맨 위(y0)까지를 범위로 잡음
-                                    rects_start = page.search_for("그림문자")
-                                    rects_end = page.search_for("신호어")
+                            for page_index in range(scan_limit):
+                                image_list = doc.get_page_images(page_index)
+                                for img_info in image_list:
+                                    xref = img_info[0]
                                     
-                                    if rects_start and rects_end:
-                                        # 시작점을 글자의 Top(y0)으로 설정하여, 글자와 나란한 이미지도 포함되게 함
-                                        # 끝점은 신호어의 Top(y0)으로 설정하여, 신호어 침범 방지
-                                        y_min = rects_start[0].y0 - 5 # 약간의 여유(buffer)
-                                        y_max = rects_end[0].y0
-                                        hp_valid_area = (y_min, y_max)
-                                except: pass
-
-                            image_list = doc.get_page_images(0)
-                            for img_info in image_list:
-                                xref = img_info[0]
-                                
-                                if option == "HP(K)":
-                                    if hp_valid_area:
+                                    # [HP(K) 필터]
+                                    # 복잡한 좌표 검색 제거 -> 안전한 Top 15% 컷만 적용
+                                    if option == "HP(K)" and page_index == 0:
                                         try:
+                                            page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
-                                            # 이미지의 중심점(mid_y)이 범위 안에 있는지 확인
-                                            img_mid_y = (rect.y0 + rect.y1) / 2
-                                            if not (hp_valid_area[0] < img_mid_y < hp_valid_area[1]):
-                                                continue
+                                            # 상단 15% (약 120px) 이내는 로고로 간주하여 차단
+                                            if rect.y1 < (page.rect.height * 0.15): continue
                                         except: continue
-                                    else:
-                                        # Fallback: 상단 10% 제외
-                                        try:
-                                            rect = page.get_image_bbox(img_info)
-                                            if rect.y1 < (page.rect.height * 0.10): continue
-                                        except: continue
-                                
-                                try:
-                                    base_image = doc.extract_image(xref)
-                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                    matched_name = None
                                     
-                                    if loaded_refs:
-                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
-                                    
-                                    if matched_name:
-                                        clean_img = loaded_refs[matched_name]
-                                        collected_pil_images.append((extract_number(matched_name), clean_img))
-                                except: continue
+                                    try:
+                                        base_image = doc.extract_image(xref)
+                                        pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                        matched_name = None
+                                        
+                                        if loaded_refs:
+                                            matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                        
+                                        if matched_name:
+                                            clean_img = loaded_refs[matched_name]
+                                            collected_pil_images.append((extract_number(matched_name), clean_img))
+                                    except: continue
                             
                             unique_images = {}
                             for key, img in collected_pil_images:
@@ -955,7 +939,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! 범위확장 & 오류해결.")
+                    st.success("완료! HP 좌표기반 이미지 추출 & 엑셀 오류 해결.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
