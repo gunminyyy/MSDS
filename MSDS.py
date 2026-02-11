@@ -4,7 +4,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, Border, Side
 from openpyxl.cell.cell import MergedCell
 from openpyxl.drawing.image import Image as XLImage
-from PIL import Image as PILImage
+from PIL import Image as PILImage, ImageChops # ImageChops 추가
 import io
 import re
 import os
@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (이미지 CFF동일화 & 지적사항 수정)")
+st.title("MSDS 양식 변환기 (Auto-Crop 적용: 그림문자 오류 해결)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -27,20 +27,39 @@ ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 # --------------------------------------------------------------------------
-# [함수] 이미지 처리
+# [함수] 이미지 처리 (Auto-Crop 기능 추가)
 # --------------------------------------------------------------------------
+def auto_crop(pil_img):
+    """이미지의 불필요한 여백을 자동으로 제거"""
+    try:
+        # 알파 채널이 있는 경우 흰색 배경으로 병합
+        if pil_img.mode != 'RGB':
+            bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
+            if pil_img.mode == 'RGBA':
+                bg.paste(pil_img, mask=pil_img.split()[3])
+            else:
+                bg.paste(pil_img)
+            pil_img = bg
+        
+        # 색상 반전 (흰색 배경을 검은색으로, 내용을 흰색으로)
+        # 내용이 있는 부분(Bounding Box)을 찾음
+        bbox = ImageChops.invert(pil_img).getbbox()
+        
+        if bbox:
+            return pil_img.crop(bbox)
+        return pil_img
+    except:
+        return pil_img
+
 def normalize_image(pil_img):
     try:
-        if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
-            background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
-            if pil_img.mode == 'P': pil_img = pil_img.convert('RGBA')
-            background.paste(pil_img, mask=pil_img.split()[3])
-            pil_img = background
-        else:
-            pil_img = pil_img.convert('RGB')
-        return pil_img.resize((32, 32)).convert('L')
+        # 1. 먼저 여백을 잘라냅니다 (이게 핵심)
+        cropped_img = auto_crop(pil_img)
+        
+        # 2. 그 후 규격화 (크기를 64x64로 키워 정확도 향상)
+        return cropped_img.resize((64, 64)).convert('L')
     except:
-        return pil_img.resize((32, 32)).convert('L')
+        return pil_img.resize((64, 64)).convert('L')
 
 def get_reference_images():
     img_folder = "reference_imgs"
@@ -64,14 +83,19 @@ def find_best_match_name(src_img, ref_images):
     try:
         src_norm = normalize_image(src_img)
         src_arr = np.array(src_norm, dtype='int16')
+        
         for name, ref_img in ref_images.items():
+            # 참조 이미지도 동일하게 전처리
             ref_norm = normalize_image(ref_img)
             ref_arr = np.array(ref_norm, dtype='int16')
+            
             diff = np.mean(np.abs(src_arr - ref_arr))
             if diff < best_score:
                 best_score = diff
                 best_name = name
-        if best_score < 65: return best_name
+        
+        # 유사도 기준 (Auto-Crop 덕분에 더 엄격하게 잡아도 됨)
+        if best_score < 60: return best_name
         else: return None
     except: return None
 
@@ -108,7 +132,6 @@ def get_clustered_lines(doc):
             row_base_y = words[0][1]
             
             for w in words[1:]:
-                # CFF/HP 공통 8px
                 if abs(w[1] - row_base_y) < 8:
                     current_row.append(w)
                 else:
@@ -907,7 +930,8 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지] XML 오류 방지 & 화이트리스트 & 물리적 필터
+                            # [이미지] XML 오류 방지 & Auto-Crop & CFF 로직
+                            
                             collected_pil_images = []
                             for page_index in range(len(doc)):
                                 image_list = doc.get_page_images(page_index)
@@ -918,7 +942,6 @@ with col_center:
                                         try:
                                             page = doc[page_index]
                                             rect = page.get_image_bbox(img_info)
-                                            # 상단 20% (약 170pt) 이내면 로고로 간주하여 차단
                                             if rect.y1 < (page.rect.height * 0.20): continue
                                         except: continue
                                     
