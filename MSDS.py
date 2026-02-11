@@ -100,7 +100,6 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map):
             safe_write_force(ws, current_row, 2, "") 
             safe_write_force(ws, current_row, 4, "")
 
-# [수정] mode 인자 추가하여 K/E 구분
 def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
     start_row = 80; end_row = 123
     if "E" in mode: end_row = 122
@@ -116,9 +115,16 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 26.7
             
-            safe_write_force(ws, current_row, 1, chem_name, center=False)
-            safe_write_force(ws, current_row, 4, cas_no, center=True)
-            safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
+            if "E" in mode:
+                safe_write_force(ws, current_row, 1, chem_name, center=False)
+                # [수정] CAS NO 왼쪽 정렬 (center=False)
+                safe_write_force(ws, current_row, 4, cas_no, center=False) 
+                safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
+            else:
+                safe_write_force(ws, current_row, 1, chem_name, center=False)
+                # [수정] CAS NO 왼쪽 정렬 (center=False)
+                safe_write_force(ws, current_row, 4, cas_no, center=False)
+                safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
         else:
             ws.row_dimensions[current_row].hidden = True
             safe_write_force(ws, current_row, 1, "")
@@ -241,7 +247,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [3. 파서 함수 (공통)]
+# [3. 파서 함수]
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
@@ -438,7 +444,343 @@ def parse_sec8_hp_content(text):
     return "\n".join(valid_lines)
 
 # --------------------------------------------------------------------------
-# [메인 실행 구역]
+# [메인 파서]
+# --------------------------------------------------------------------------
+def parse_pdf_final(doc, mode="CFF(K)"):
+    all_lines = get_clustered_lines(doc)
+    
+    result = {
+        "hazard_cls": [], "signal_word": "", "h_codes": [], 
+        "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
+        "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}, "sec14": {}, "sec15": {}
+    }
+    
+    if mode == "CFF(E)":
+        hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
+        hazard_cls_lines = []
+        for line in hazard_cls_text.split('\n'):
+            line = line.strip()
+            if not line: continue
+            if "2.1 Classification" in line: continue
+            if line.lower() == "mixture": continue
+            hazard_cls_lines.append(line)
+        result["hazard_cls"] = hazard_cls_lines
+
+        full_text = "\n".join([l['text'] for l in all_lines])
+        m_sig = re.search(r"Signal word\s*[:\-\s]*([A-Za-z]+)", full_text, re.IGNORECASE)
+        if m_sig: result["signal_word"] = m_sig.group(1).capitalize()
+        
+        h_text = extract_section_smart(all_lines, "Hazard statements", "Precautionary statements", mode)
+        result["h_codes"] = list(set(re.findall(r'\b(H\d{3}[a-zA-Z]*)\b', h_text)))
+
+        p_prev_text = extract_section_smart(all_lines, "Precautionary statements", "Response", mode)
+        result["p_prev"] = list(set(re.findall(r'\b(P\d{3}[a-zA-Z]*)\b', p_prev_text)))
+        
+        p_resp_text = extract_section_smart(all_lines, "Response", "Storage", mode)
+        result["p_resp"] = list(set(re.findall(r'\b(P\d{3}[a-zA-Z]*)\b', p_resp_text)))
+        
+        p_stor_text = extract_section_smart(all_lines, "Storage", "Disposal", mode)
+        result["p_stor"] = list(set(re.findall(r'\b(P\d{3}[a-zA-Z]*)\b', p_stor_text)))
+        
+        p_disp_text = extract_section_smart(all_lines, "Disposal", "2.3 Other hazards", mode)
+        result["p_disp"] = list(set(re.findall(r'\b(P\d{3}[a-zA-Z]*)\b', p_disp_text)))
+
+        comp_text = extract_section_smart(all_lines, "3. Composition", "4. FIRST-AID", mode)
+        regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
+        regex_conc = re.compile(r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)')
+        
+        comp_lines = comp_text.split('\n')
+        for line in comp_lines:
+            cas_m = regex_cas.search(line)
+            conc_m = regex_conc.search(line)
+            if cas_m:
+                c_val = cas_m.group(0)
+                cn_val = ""
+                if conc_m: cn_val = f"{conc_m.group(1)} ~ {conc_m.group(2)}"
+                result["composition_data"].append((c_val, cn_val))
+
+        data = {}
+        data["B125"] = extract_section_smart(all_lines, "4.1 General advice", "4.2 In case of eye contact", mode)
+        data["B126"] = extract_section_smart(all_lines, "4.2 In case of eye contact", "4.3 In case of skin contact", mode)
+        data["B127"] = extract_section_smart(all_lines, "4.3 In case of skin contact", "4.4 If inhaled", mode)
+        data["B128"] = extract_section_smart(all_lines, "4.4 If inhaled", "4.5 If swallowed", mode)
+        data["B129"] = extract_section_smart(all_lines, "4.5 If swallowed", "4.6 Special note for doctors", mode)
+        if data["B129"]:
+            data["B129"] = data["B129"].replace("Medical personnel, and to ensure that take protection measures is recognized for its substance", "")
+
+        data["B132"] = extract_section_smart(all_lines, "5.1 Extinguishing media", "5.2 Special hazards", mode)
+        data["B134"] = extract_section_smart(all_lines, "5.2 Special hazards", "5.3 Advice for firefighters", mode)
+        if data["B134"]: data["B134"] = data["B134"].replace("substance or mixture", "")
+
+        data["B136"] = extract_section_smart(all_lines, "5.3 Advice for firefighters", "6. Accidental", mode)
+        
+        data["B140"] = extract_section_smart(all_lines, "6.1 Personal precautions", "6.2 Environmental", mode)
+        if data["B140"]: data["B140"] = data["B140"].replace("equipment and emergency procedures", "")
+
+        data["B142"] = extract_section_smart(all_lines, "6.2 Environmental", "6.3 Methods", mode)
+        
+        data["B144"] = extract_section_smart(all_lines, "6.3 Methods", "7. Handling", mode)
+        if data["B144"]: data["B144"] = data["B144"].replace("and cleaning up", "")
+
+        data["B148"] = extract_section_smart(all_lines, "7.1 Precautions", "7.2 Conditions", mode)
+        
+        data["B150"] = extract_section_smart(all_lines, "7.2 Conditions", "8. Exposure", mode)
+        if data["B150"]: data["B150"] = data["B150"].replace("any incompatibilities", "")
+
+        result["sec4_to_7"] = data
+
+        s8 = {}
+        s8["B154"] = extract_section_smart(all_lines, "Internal regulations", "ACGIH regulations", mode)
+        s8["B156"] = extract_section_smart(all_lines, "ACGIH regulations", "Biological exposure", mode)
+        result["sec8"] = s8
+
+        s9 = {}
+        s9["B170"] = extract_section_smart(all_lines, "Color", "Odor", mode)
+        s9["B176"] = extract_section_smart(all_lines, "Flash point", "Evaporation rate", mode)
+        s9["B183"] = extract_section_smart(all_lines, "Specific gravity", "Partition coefficient", mode)
+        s9["B189"] = extract_section_smart(all_lines, "Refractive index", "10. Stability", mode)
+        result["sec9"] = s9
+
+        s14 = {}
+        un_text = extract_section_smart(all_lines, "14.1 UN number", "14.2 Proper", mode)
+        s14["UN"] = re.sub(r'\D', '', un_text)
+        name_text = extract_section_smart(all_lines, "14.2 Proper", "14.3 Transport", mode)
+        s14["NAME"] = name_text
+        result["sec14"] = s14
+
+        return result
+
+    if mode == "CFF(K)":
+        for i in range(len(all_lines)):
+            if "적정선적명" in all_lines[i]['text']:
+                target_line = all_lines[i]
+                if i > 0:
+                    prev_line = all_lines[i-1]
+                    if abs(prev_line['global_y0'] - target_line['global_y0']) < 20:
+                        if "적정선적명" not in prev_line['text'] and "유엔번호" not in prev_line['text']:
+                            all_lines[i]['text'] = target_line['text'] + " " + prev_line['text']
+                            all_lines[i-1]['text'] = ""
+    
+    limit_y = 999999
+    for line in all_lines:
+        if "3. 구성성분" in line['text'] or "3. 성분" in line['text']:
+            limit_y = line['global_y0']; break
+    
+    full_text_hp = "\n".join([l['text'] for l in all_lines if l['global_y0'] < limit_y])
+    
+    signal_found = False
+    if mode == "HP(K)":
+        try:
+            start_sig = full_text_hp.find("신호어")
+            end_sig = full_text_hp.find("유해", start_sig)
+            if start_sig != -1 and end_sig != -1:
+                target_area = full_text_hp[start_sig:end_sig]
+                m = re.search(r"[-•]\s*(위험|경고)", target_area)
+                if m: result["signal_word"] = m.group(1); signal_found = True
+        except: pass
+    if not signal_found:
+        for line in full_text_hp.split('\n'):
+            if "신호어" in line:
+                val = line.replace("신호어", "").replace(":", "").strip()
+                if val in ["위험", "경고"]: result["signal_word"] = val
+            elif line.strip() in ["위험", "경고"] and not result["signal_word"]:
+                result["signal_word"] = line.strip()
+    
+    if mode == "HP(K)":
+        lines_hp = full_text_hp.split('\n')
+        state = 0
+        for l in lines_hp:
+            if "가. 유해성" in l: state=1; continue
+            if "나. 예방조치" in l: state=0; continue
+            if state==1 and l.strip():
+                if "공급자" not in l and "회사명" not in l:
+                    clean_l = l.replace("-", "").strip()
+                    if clean_l: result["hazard_cls"].append(clean_l)
+    else: 
+        lines_hp = full_text_hp.split('\n')
+        state = 0
+        for l in lines_hp:
+            l_ns = l.replace(" ", "")
+            if "2.유해성" in l_ns and "위험성" in l_ns: state = 1; continue 
+            if "나.예방조치" in l_ns: state = 0; continue
+            if state == 1 and l.strip():
+                if "가.유해성" in l_ns and "분류" in l_ns:
+                    check_header = re.sub(r'[가-하][\.\s]*유해성[\s\.]*위험성[\s\.]*분류', '', l).strip()
+                    if not check_header: continue 
+                    l = check_header
+                if "공급자" not in l and "회사명" not in l:
+                    result["hazard_cls"].append(l.strip())
+
+    regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+    all_matches = regex_code.findall(full_text_hp)
+    seen = set()
+    if "P321" in full_text_hp and "P321" not in all_matches: all_matches.append("P321")
+    for code_raw in all_matches:
+        code = code_raw.replace(" ", "").upper()
+        if code in seen: continue
+        seen.add(code)
+        if code.startswith("H"): result["h_codes"].append(code)
+        elif code.startswith("P"):
+            p = code.split("+")[0]
+            if p.startswith("P2"): result["p_prev"].append(code)
+            elif p.startswith("P3"): result["p_resp"].append(code)
+            elif p.startswith("P4"): result["p_stor"].append(code)
+            elif p.startswith("P5"): result["p_disp"].append(code)
+
+    regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
+    regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
+    regex_cas_ec_kill = re.compile(r'\b\d{2,7}\s*-\s*\d{2,3}\s*-\s*\d\b')
+    regex_tilde_range = re.compile(r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)') 
+    
+    in_comp = False
+    for line in all_lines:
+        txt = line['text']
+        if "3." in txt and ("성분" in txt or "Composition" in txt): in_comp=True; continue
+        if "4." in txt and ("응급" in txt or "First" in txt): in_comp=False; break
+        if in_comp:
+            if re.search(r'^\d+\.\d+', txt): continue 
+            
+            c_val = ""
+            cn_val = ""
+            
+            if mode == "HP(K)":
+                cas_found = regex_cas_strict.findall(txt)
+                if cas_found:
+                    c_val = cas_found[0].replace(" ", "")
+                    txt_no_cas = txt.replace(cas_found[0], " " * len(cas_found[0]))
+                    m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
+                    if m_range:
+                        s, e = m_range.group(1), m_range.group(2)
+                        if s == "1": s = "0"
+                        cn_val = f"{s} ~ {e}"
+                    else:
+                        m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
+                        if m_single:
+                            try:
+                                if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
+                            except: pass
+            else:
+                cas_found = regex_cas_ec_kill.findall(txt)
+                if cas_found:
+                    potential_cas = cas_found[0].replace(" ", "")
+                    if re.match(r'\d{2,7}-\d{2}-\d', potential_cas): c_val = potential_cas
+                txt_clean = regex_cas_ec_kill.sub(" ", txt)
+                m_tilde = regex_tilde_range.search(txt_clean)
+                if m_tilde:
+                    s, e = m_tilde.group(1), m_tilde.group(2)
+                    if s == "1": s = "0"
+                    cn_val = f"{s} ~ {e}"
+            
+            if c_val or cn_val:
+                if "." in cn_val: continue
+                result["composition_data"].append((c_val, cn_val))
+
+    data = {}
+    if mode == "HP(K)":
+        data["B125"] = extract_section_smart(all_lines, "가. 눈에", "나. 피부", mode)
+        data["B126"] = extract_section_smart(all_lines, "나. 피부", "다. 흡입", mode)
+        data["B127"] = extract_section_smart(all_lines, "다. 흡입", "라. 먹었을", mode)
+        data["B128"] = extract_section_smart(all_lines, "라. 먹었을", "마. 기타", mode)
+        data["B129"] = extract_section_smart(all_lines, "마. 기타", ["5.", "폭발"], mode)
+        data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
+        data["B133"] = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
+        data["B134"] = extract_section_smart(all_lines, "다. 화재진압", ["6.", "누출"], mode)
+    else: 
+        data["B125"] = extract_section_smart(all_lines, "나. 눈", "다. 피부", mode)
+        data["B126"] = extract_section_smart(all_lines, "다. 피부", "라. 흡입", mode)
+        data["B127"] = extract_section_smart(all_lines, "라. 흡입", "마. 먹었을", mode)
+        data["B128"] = extract_section_smart(all_lines, "마. 먹었을", "바. 기타", mode)
+        data["B129"] = extract_section_smart(all_lines, "바. 기타", ["5.", "폭발"], mode)
+        data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
+        data["B133"] = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
+        data["B134"] = extract_section_smart(all_lines, "다. 화재진압", ["6.", "누출"], mode)
+    
+    data["B138"] = extract_section_smart(all_lines, "가. 인체를", "나. 환경을", mode)
+    data["B139"] = extract_section_smart(all_lines, "나. 환경을", "다. 정화", mode)
+    data["B140"] = extract_section_smart(all_lines, "다. 정화", ["7.", "취급"], mode)
+    data["B143"] = extract_section_smart(all_lines, "가. 안전취급", "나. 안전한", mode)
+    data["B144"] = extract_section_smart(all_lines, "나. 안전한", ["8.", "노출"], mode)
+    result["sec4_to_7"] = data
+
+    sec8_lines = []
+    start_8 = -1; end_8 = -1
+    for i, line in enumerate(all_lines):
+        if "8. 노출방지" in line['text']: start_8 = i
+        if "9. 물리화학" in line['text']: end_8 = i; break
+    if start_8 != -1:
+        if end_8 == -1: end_8 = len(all_lines)
+        sec8_lines = all_lines[start_8:end_8]
+    
+    if mode == "HP(K)":
+        b148_raw = extract_section_smart(sec8_lines, "국내노출기준", "ACGIH노출기준", mode)
+        b150_raw = extract_section_smart(sec8_lines, "ACGIH노출기준", "생물학적", mode)
+        b148_raw = parse_sec8_hp_content(b148_raw)
+        b150_raw = parse_sec8_hp_content(b150_raw)
+    else:
+        b148_raw = extract_section_smart(sec8_lines, "국내규정", "ACGIH", mode)
+        b150_raw = extract_section_smart(sec8_lines, "ACGIH", "생물학적", mode)
+    result["sec8"] = {"B148": b148_raw, "B150": b150_raw}
+
+    sec9_lines = []
+    start_9 = -1; end_9 = -1
+    for i, line in enumerate(all_lines):
+        if "9. 물리화학" in line['text']: start_9 = i
+        if "10. 안정성" in line['text']: end_9 = i; break
+    if start_9 != -1:
+        if end_9 == -1: end_9 = len(all_lines)
+        sec9_lines = all_lines[start_9:end_9]
+        
+    if mode == "HP(K)":
+        result["sec9"] = {
+            "B163": extract_section_smart(sec9_lines, "- 색", "나. 냄새", mode),
+            "B169": extract_section_smart(sec9_lines, "인화점", "아. 증발속도", mode),
+            "B176": extract_section_smart(sec9_lines, "비중", "거. n-옥탄올", mode),
+            "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"], mode)
+        }
+    else:
+        result["sec9"] = {
+            "B163": extract_section_smart(sec9_lines, "색상", "나. 냄새", mode),
+            "B169": extract_section_smart(sec9_lines, "인화점", "아. 증발속도", mode),
+            "B176": extract_section_smart(sec9_lines, "비중", "거. n-옥탄올", mode),
+            "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"], mode)
+        }
+
+    sec14_lines = []
+    start_14 = -1; end_14 = -1
+    for i, line in enumerate(all_lines):
+        if "14. 운송에" in line['text']: start_14 = i
+        if "15. 법적규제" in line['text']: end_14 = i; break
+    if start_14 != -1:
+        if end_14 == -1: end_14 = len(all_lines)
+        sec14_lines = all_lines[start_14:end_14]
+    
+    if mode == "HP(K)":
+        un_no = extract_section_smart(sec14_lines, "유엔번호", "나. 유엔", mode)
+        ship_name = extract_section_smart(sec14_lines, "유엔 적정 선적명", ["다. 운송에서의", "다.운송에서의"], mode)
+    else:
+        un_no = extract_section_smart(sec14_lines, "유엔번호", "나. 적정선적명", mode)
+        ship_name = extract_section_smart(sec14_lines, "적정선적명", ["다. 운송에서의", "다.운송에서의"], mode)
+    result["sec14"] = {"UN": un_no, "NAME": ship_name}
+
+    sec15_lines = []
+    start_15 = -1; end_15 = -1
+    for i, line in enumerate(all_lines):
+        if "15. 법적규제" in line['text']: start_15 = i
+        if "16. 그 밖의" in line['text']: end_15 = i; break
+    if start_15 != -1:
+        if end_15 == -1: end_15 = len(all_lines)
+        sec15_lines = all_lines[start_15:end_15]
+    
+    if mode == "HP(K)":
+        danger_act = ""
+    else:
+        danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", "마. 폐기물", mode)
+    result["sec15"] = {"DANGER": danger_act}
+
+    return result
+
+# --------------------------------------------------------------------------
+# [4. 메인 실행 구역]
 # --------------------------------------------------------------------------
 with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
@@ -457,202 +799,204 @@ product_name_input = st.text_input("제품명 입력 (B7, B10)")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 st.write("") 
 
-# [UI 변경] 변환 버튼과 다운로드 버튼을 중앙에 배치
+col_left, col_center, col_right = st.columns([4, 2, 4])
+
 if 'converted_files' not in st.session_state:
     st.session_state['converted_files'] = []
     st.session_state['download_data'] = {}
 
-uploaded_files = st.file_uploader("3. 원본 파일 업로드 (PDF)", type=["pdf"], accept_multiple_files=True)
-st.write("") 
+with col_left:
+    st.subheader("3. 원본 파일 업로드")
+    uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
 
-if st.button("▶ 변환 시작", use_container_width=True):
-    if uploaded_files and master_data_file and template_file:
-        with st.spinner(f"{option} 모드로 변환 중..."):
-            
-            new_files = []
-            new_download_data = {}
-            
-            code_map = {} 
-            cas_name_map = {} 
-            kor_data_map = {} # K용
-            eng_data_map = {} # E용
-            
-            try:
-                xls = pd.ExcelFile(master_data_file)
+with col_center:
+    st.write("") ; st.write("") ; st.write("")
+    
+    if st.button("▶ 변환 시작", use_container_width=True):
+        if uploaded_files and master_data_file and template_file:
+            with st.spinner(f"{option} 모드로 변환 중..."):
                 
-                # 1. 위험안전문구 시트 로드
-                target_sheet = None
-                for sheet in xls.sheet_names:
-                    if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
-                if not target_sheet:
-                        for sheet in xls.sheet_names:
-                        df_tmp = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
-                        if 'CODE' in [str(c).upper() for c in df_tmp.columns]: target_sheet = sheet; break
-                if target_sheet:
-                    df_code = pd.read_excel(master_data_file, sheet_name=target_sheet)
-                    df_code.columns = [str(c).replace(" ", "").upper() for c in df_code.columns]
-                    col_c = 'CODE'; 
+                new_files = []
+                new_download_data = {}
+                
+                code_map = {} 
+                cas_name_map = {} 
+                kor_data_map = {} # K용
+                eng_data_map = {} # E용
+                
+                try:
+                    xls = pd.ExcelFile(master_data_file)
                     
-                    # [수정] row.columns 오류 해결 -> df_code.columns 사용
-                    # 사용자 데이터가 K=C열, E=C열(영문내용)이라고 가정 (혹은 구조에 맞게)
-                    target_col_idx = 2 # 기본 3번째 열(C)
-                    if len(df_code.columns) <= target_col_idx: target_col_idx = len(df_code.columns) - 1
-                    target_col_name = df_code.columns[target_col_idx]
+                    # 1. 위험안전문구 시트 로드
+                    target_sheet = None
+                    for sheet in xls.sheet_names:
+                        if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
+                    if not target_sheet:
+                         for sheet in xls.sheet_names:
+                            df_tmp = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
+                            if 'CODE' in [str(c).upper() for c in df_tmp.columns]: target_sheet = sheet; break
+                    if target_sheet:
+                        df_code = pd.read_excel(master_data_file, sheet_name=target_sheet)
+                        df_code.columns = [str(c).replace(" ", "").upper() for c in df_code.columns]
+                        col_c = 'CODE'; 
+                        
+                        target_col_idx = 2 # 기본 3번째 열(C)
+                        if len(df_code.columns) <= target_col_idx: target_col_idx = len(df_code.columns) - 1
+                        target_col_name = df_code.columns[target_col_idx]
 
-                    for _, row in df_code.iterrows():
-                        if pd.notna(row[col_c]):
-                            code_key = str(row[col_c]).replace(" ","").upper().strip()
-                            code_val = str(row[target_col_name]).strip()
-                            code_map[code_key] = code_val
+                        for _, row in df_code.iterrows():
+                            if pd.notna(row[col_c]):
+                                code_key = str(row[col_c]).replace(" ","").upper().strip()
+                                code_val = str(row[target_col_name]).strip()
+                                code_map[code_key] = code_val
                 
                 # 2. 데이터 시트 로드
-                if "K" in option:
-                    sheet_kor = None
-                    for sheet in xls.sheet_names:
-                        if "국문" in sheet: sheet_kor = sheet; break
-                    if sheet_kor:
-                        df_kor = pd.read_excel(master_data_file, sheet_name=sheet_kor)
-                        for _, row in df_kor.iterrows():
-                            val_cas = row.iloc[0]
-                            val_name = row.iloc[1]
-                            if pd.notna(val_cas):
-                                c = str(val_cas).replace(" ", "").strip()
-                                n = str(val_name).strip() if pd.notna(val_name) else ""
-                                cas_name_map[c] = n
-                                if n:
-                                    kor_data_map[n] = {
-                                        'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                        'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                    }
-                else: # 영문 (CFF E)
-                    sheet_eng = None
-                    for sheet in xls.sheet_names:
-                        if "영문" in sheet: sheet_eng = sheet; break
-                    if sheet_eng:
-                        df_eng = pd.read_excel(master_data_file, sheet_name=sheet_eng)
-                        for _, row in df_eng.iterrows():
-                            val_cas = row.iloc[0]
-                            val_name = row.iloc[1]
-                            if pd.notna(val_cas):
-                                c = str(val_cas).replace(" ", "").strip()
-                                n = str(val_name).strip() if pd.notna(val_name) else ""
-                                cas_name_map[c] = n # CAS -> Name
-                                if n:
-                                    eng_data_map[n] = {
-                                        'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                        'P': row.iloc[15], 'Q': row.iloc[16], 
-                                        'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                    }
+                    if "K" in option:
+                        sheet_kor = None
+                        for sheet in xls.sheet_names:
+                            if "국문" in sheet: sheet_kor = sheet; break
+                        if sheet_kor:
+                            df_kor = pd.read_excel(master_data_file, sheet_name=sheet_kor)
+                            for _, row in df_kor.iterrows():
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                    cas_name_map[c] = n
+                                    if n:
+                                        kor_data_map[n] = {
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                        }
+                    else: # 영문 (CFF E)
+                        sheet_eng = None
+                        for sheet in xls.sheet_names:
+                            if "영문" in sheet: sheet_eng = sheet; break
+                        if sheet_eng:
+                            df_eng = pd.read_excel(master_data_file, sheet_name=sheet_eng)
+                            for _, row in df_eng.iterrows():
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                    cas_name_map[c] = n # CAS -> Name
+                                    if n:
+                                        eng_data_map[n] = {
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'Q': row.iloc[16], 
+                                            'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                        }
 
-            except Exception as e:
-                st.error(f"데이터 로드 오류: {e}")
+                except Exception as e:
+                    st.error(f"데이터 로드 오류: {e}")
 
-            for uploaded_file in uploaded_files:
-                try:
-                    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                    parsed_data = parse_pdf_final(doc, mode=option)
-                    
-                    template_file.seek(0)
-                    dest_wb = load_workbook(io.BytesIO(template_file.read()))
-                    dest_ws = dest_wb.active
-
-                    dest_wb.external_links = []
-                    dest_ws._images = []
-
-                    # 초기화
-                    for row in dest_ws.iter_rows():
-                        for cell in row:
-                            if isinstance(cell, MergedCell): continue
-                            if cell.column == 2 and cell.data_type == 'f': cell.value = ""
-
-                    # [공통] 제품명
-                    safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
-                    safe_write_force(dest_ws, 9, 2, product_name_input, center=True)
-                    
-                    # [로직 분리]
-                    if option == "CFF(E)":
-                        # CFF(E) 로직 (위에서 작성한 내용 그대로 적용)
-                        if parsed_data["hazard_cls"]:
-                            clean_cls = "\n".join(parsed_data["hazard_cls"])
-                            safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
+                for uploaded_file in uploaded_files:
+                    try:
+                        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+                        parsed_data = parse_pdf_final(doc, mode=option)
                         
-                        if parsed_data["signal_word"]:
-                            safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
+                        template_file.seek(0)
+                        dest_wb = load_workbook(io.BytesIO(template_file.read()))
+                        dest_ws = dest_wb.active
 
-                        fill_fixed_range(dest_ws, 24, 36, parsed_data["h_codes"], code_map)
-                        fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
-                        fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
-                        fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
-                        fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
+                        dest_wb.external_links = []
+                        dest_ws._images = []
+
+                        # 초기화
+                        for row in dest_ws.iter_rows():
+                            for cell in row:
+                                if isinstance(cell, MergedCell): continue
+                                if cell.column == 2 and cell.data_type == 'f': cell.value = ""
+
+                        # [공통] 제품명
+                        safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
+                        safe_write_force(dest_ws, 9, 2, product_name_input, center=True)
                         
-                        fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
-                        
-                        active_substances = []
-                        for c_data in parsed_data["composition_data"]:
-                            cas = c_data[0].replace(" ", "").strip()
-                            if cas in cas_name_map:
-                                name = cas_name_map[cas]
-                                if name: active_substances.append(name)
-                                
-                        sd = parsed_data["sec4_to_7"]
-                        cell_map_e = {
-                            "B125": sd.get("B125",""), "B126": sd.get("B126",""), 
-                            "B127": sd.get("B127",""), "B128": sd.get("B128",""),
-                            "B129": sd.get("B129",""), "B132": sd.get("B132",""),
-                            "B134": sd.get("B134",""), "B136": sd.get("B136",""),
-                            "B140": sd.get("B140",""), "B142": sd.get("B142",""),
-                            "B144": sd.get("B144",""), "B148": sd.get("B148",""),
-                            "B150": sd.get("B150",""),
-                            "B170": parsed_data["sec9"].get("B170","").capitalize(),
-                            "B176": parsed_data["sec9"].get("B176",""),
-                            "B183": parsed_data["sec9"].get("B183",""),
-                            "B189": parsed_data["sec9"].get("B189","")
-                        }
-                        
-                        for addr, val in cell_map_e.items():
-                            if not val: continue
-                            if addr in ["B183", "B189"] and "±" not in val:
-                                num = re.search(r'([\d\.]+)', val)
-                                if num:
-                                    suffix = "0.01" if addr == "B183" else "0.005"
-                                    val = f"{num.group(1)} ± {suffix}"
+                        # [CFF(E) 전용 입력]
+                        if option == "CFF(E)":
+                            if parsed_data["hazard_cls"]:
+                                clean_cls = "\n".join(parsed_data["hazard_cls"])
+                                safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
                             
-                            formatted, h = format_and_calc_height_sec47(val)
-                            r_idx = int(re.search(r'\d+', addr).group())
-                            safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
-                            dest_ws.row_dimensions[r_idx].height = h
+                            if parsed_data["signal_word"]:
+                                safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
 
-                        s8 = parsed_data["sec8"]
-                        if s8["B154"]:
-                            lines = s8["B154"].split('\n')
-                            safe_write_force(dest_ws, 154, 2, lines[0].lower() if "no data" in lines[0].lower() else lines[0], center=False)
-                            if len(lines) > 1:
-                                safe_write_force(dest_ws, 155, 2, "\n".join(lines[1:]), center=False)
-                                dest_ws.row_dimensions[155].hidden = False
-                        
-                        if s8["B156"]:
-                            lines = s8["B156"].split('\n')
-                            safe_write_force(dest_ws, 156, 2, lines[0].lower() if "no data" in lines[0].lower() else lines[0], center=False)
-                            if len(lines) > 1:
-                                safe_write_force(dest_ws, 157, 2, "\n".join(lines[1:]), center=False)
-                                dest_ws.row_dimensions[157].hidden = False
+                            fill_fixed_range(dest_ws, 24, 36, parsed_data["h_codes"], code_map)
+                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
+                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
+                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
+                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
+                            
+                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
+                            
+                            active_substances = []
+                            for c_data in parsed_data["composition_data"]:
+                                cas = c_data[0].replace(" ", "").strip()
+                                if cas in cas_name_map:
+                                    name = cas_name_map[cas]
+                                    if name: active_substances.append(name)
+                                    
+                            sd = parsed_data["sec4_to_7"]
+                            cell_map_e = {
+                                "B125": sd.get("B125",""), "B126": sd.get("B126",""), 
+                                "B127": sd.get("B127",""), "B128": sd.get("B128",""),
+                                "B129": sd.get("B129",""), "B132": sd.get("B132",""),
+                                "B134": sd.get("B134",""), "B136": sd.get("B136",""),
+                                "B140": sd.get("B140",""), "B142": sd.get("B142",""),
+                                "B144": sd.get("B144",""), "B148": sd.get("B148",""),
+                                "B150": sd.get("B150",""),
+                                "B170": parsed_data["sec9"].get("B170","").capitalize(),
+                                "B176": parsed_data["sec9"].get("B176",""),
+                                "B183": parsed_data["sec9"].get("B183",""),
+                                "B189": parsed_data["sec9"].get("B189","")
+                            }
+                            
+                            for addr, val in cell_map_e.items():
+                                if not val: continue
+                                if addr in ["B183", "B189"] and "±" not in val:
+                                    num = re.search(r'([\d\.]+)', val)
+                                    if num:
+                                        suffix = "0.01" if addr == "B183" else "0.005"
+                                        val = f"{num.group(1)} ± {suffix}"
+                                
+                                formatted, h = format_and_calc_height_sec47(val)
+                                r_idx = int(re.search(r'\d+', addr).group())
+                                safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
+                                dest_ws.row_dimensions[r_idx].height = h
 
-                        fill_regulatory_section(dest_ws, 202, 240, active_substances, eng_data_map, 'F')
-                        fill_regulatory_section(dest_ws, 242, 279, active_substances, eng_data_map, 'G')
-                        fill_regulatory_section(dest_ws, 281, 315, active_substances, eng_data_map, 'H')
-                        fill_regulatory_section(dest_ws, 324, 358, active_substances, eng_data_map, 'P')
-                        fill_regulatory_section(dest_ws, 360, 395, active_substances, eng_data_map, 'Q')
-                        fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T')
-                        fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U')
-                        fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V')
+                            s8 = parsed_data["sec8"]
+                            if s8["B154"]:
+                                lines = s8["B154"].split('\n')
+                                safe_write_force(dest_ws, 154, 2, lines[0].lower() if "no data" in lines[0].lower() else lines[0], center=False)
+                                if len(lines) > 1:
+                                    safe_write_force(dest_ws, 155, 2, "\n".join(lines[1:]), center=False)
+                                    dest_ws.row_dimensions[155].hidden = False
+                            
+                            if s8["B156"]:
+                                lines = s8["B156"].split('\n')
+                                safe_write_force(dest_ws, 156, 2, lines[0].lower() if "no data" in lines[0].lower() else lines[0], center=False)
+                                if len(lines) > 1:
+                                    safe_write_force(dest_ws, 157, 2, "\n".join(lines[1:]), center=False)
+                                    dest_ws.row_dimensions[157].hidden = False
 
-                        s14 = parsed_data["sec14"]
-                        safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
-                        name_clean = re.sub(r'[\(\)\d]', '', s14["NAME"]).strip()
-                        safe_write_force(dest_ws, 532, 2, name_clean, center=False)
+                            fill_regulatory_section(dest_ws, 202, 240, active_substances, eng_data_map, 'F')
+                            fill_regulatory_section(dest_ws, 242, 279, active_substances, eng_data_map, 'G')
+                            fill_regulatory_section(dest_ws, 281, 315, active_substances, eng_data_map, 'H')
+                            fill_regulatory_section(dest_ws, 324, 358, active_substances, eng_data_map, 'P')
+                            fill_regulatory_section(dest_ws, 360, 395, active_substances, eng_data_map, 'Q')
+                            fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T')
+                            fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U')
+                            fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V')
 
-                        today_eng = datetime.now().strftime("%d. %b. %Y")
-                        safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
+                            s14 = parsed_data["sec14"]
+                            safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
+                            name_clean = re.sub(r'[\(\)\d]', '', s14["NAME"]).strip()
+                            safe_write_force(dest_ws, 532, 2, name_clean, center=False)
+
+                            today_eng = datetime.now().strftime("%d. %b. %Y")
+                            safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
 
                     # [CFF(K) / HP(K) 처리]
                     else:
