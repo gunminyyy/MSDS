@@ -682,17 +682,17 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
+        master_data_file = st.file_uploader("ingredients CAS and EC 통합 데이터", type="xlsx")
         loaded_refs, folder_exists = get_reference_images()
         if folder_exists and loaded_refs:
-            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
+            st.success(f"✅ 이미지 {len(loaded_refs)}개 로드됨")
         elif not folder_exists:
             st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
     with col2:
-        template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
+        template_file = st.file_uploader("양식 파일 (GHS MSDS 양식)", type="xlsx")
 
-product_name_input = st.text_input("제품명 입력 (B7, B10)")
+product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 st.write("") 
 
@@ -704,7 +704,7 @@ if 'converted_files' not in st.session_state:
 
 with col_left:
     st.subheader("원본 파일 업로드")
-    uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("원본 파일 (PDF)", type=["pdf"], accept_multiple_files=True)
 
 with col_center:
     st.write("") ; st.write("") ; st.write("")
@@ -1028,5 +1028,6 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
+
 
 
