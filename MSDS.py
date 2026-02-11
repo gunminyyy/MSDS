@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (비율 검사 & 절대평가)")
+st.title("MSDS 양식 변환기 (색상/형태 기반 로고 제거)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -141,9 +141,44 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 처리 함수] - HP/CFF 이원화
+# [2. 이미지 필터링 함수] - HP 전용 (색상/비율)
+# --------------------------------------------------------------------------
+def is_blue_dominant(pil_img):
+    """이미지에 파란색 성분이 강한지 확인 (로고 판별용)"""
+    try:
+        # 계산 속도를 위해 작게 리사이즈
+        img = pil_img.resize((50, 50)).convert('RGB')
+        data = np.array(img)
+        
+        # R, G, B 채널 분리
+        r = data[:,:,0].astype(int)
+        g = data[:,:,1].astype(int)
+        b = data[:,:,2].astype(int)
+        
+        # 파란색이 빨강, 초록보다 월등히 높은 픽셀 (Blue Dominant Pixel)
+        # B가 R보다 30 이상 크고, G보다 30 이상 큰 픽셀
+        blue_mask = (b > r + 30) & (b > g + 30)
+        
+        # 전체 픽셀 중 파란색 픽셀 비율
+        blue_ratio = np.sum(blue_mask) / (50 * 50)
+        
+        # 파란색 픽셀이 5% 이상이면 파란색 로고로 간주
+        return blue_ratio > 0.05
+    except:
+        return False
+
+def is_square_shaped(width, height):
+    """가로세로 비율이 정사각형에 가까운지 확인 (GHS 판별용)"""
+    if height == 0: return False
+    ratio = width / height
+    # 0.8 ~ 1.2 사이면 정사각형으로 인정
+    return 0.8 < ratio < 1.2
+
+# --------------------------------------------------------------------------
+# [3. 이미지 전처리 함수]
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
+    """[HP전용] 이미지 여백 제거"""
     try:
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -158,7 +193,7 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 확정 로직"""
+    """[CFF전용] 기존 확정 로직 (32x32)"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -201,7 +236,7 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     
     if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
-        threshold = 80 # 절대평가 기준 (80점 이내면 통과)
+        threshold = 70 
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -221,17 +256,17 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
                 best_name = name
         
         if best_score < threshold:
-            return best_name, best_score
+            return best_name
         else:
-            return None, None
-    except: return None, None
+            return None
+    except: return None
 
 def extract_number(filename):
     nums = re.findall(r'\d+', filename)
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [3. 파서 함수]
+# [4. 파서 함수]
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
@@ -513,8 +548,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
                             try:
-                                if float(m_single.group(1)) <= 100:
-                                    cn_val = m_single.group(1)
+                                if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
                             except: pass
             else:
                 cas_found = regex_cas_ec_kill.findall(txt)
@@ -854,7 +888,7 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지 처리 - HP(K) 필터 최적화]
+                            # [이미지 처리 - HP(K) 필터 단순화 (무조건 수집 -> 후처리 필터)]
                             collected_pil_images = []
                             scan_limit = min(1, len(doc)) 
                             
@@ -863,68 +897,45 @@ with col_center:
                                 for img_info in image_list:
                                     xref = img_info[0]
                                     
-                                    # [HP(K) 필터]
-                                    if option == "HP(K)" and page_index == 0:
-                                        try:
-                                            page = doc[page_index]
-                                            rect = page.get_image_bbox(img_info)
-                                            
-                                            # 1. 상단 15% (로고 영역)만 제외
-                                            if rect.y1 < (page.rect.height * 0.15): continue
-                                            
-                                            # 2. [추가] 너무 넓거나 좁은 이미지 제외 (GHS는 정사각형에 가까움)
-                                            # 가로세로 비율이 0.8 ~ 1.2 사이가 아니면 로고일 확률 높음
-                                            width = rect.x1 - rect.x0
-                                            height = rect.y1 - rect.y0
-                                            aspect_ratio = width / height
-                                            if not (0.8 < aspect_ratio < 1.2): continue
-                                            
-                                        except: continue
-                                    
+                                    # [HP(K) 필터] - 위치 무시하고 일단 수집 (나중에 색상/모양으로 거름)
                                     try:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         
-                                        # 매칭 수행 (Score 포함 반환)
-                                        if loaded_refs:
-                                            # HP일 때 Threshold를 80으로 잡음 (절대평가 기준)
-                                            matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                        # 1. 색상 필터 (파란색 로고 제거) - HP 전용
+                                        if option == "HP(K)":
+                                            if is_blue_dominant(pil_img):
+                                                continue
                                             
-                                            # 매칭 성공 시
+                                            # 2. 모양 필터 (정사각형 아님 제거) - HP 전용
+                                            w, h = pil_img.size
+                                            if not is_square_shaped(w, h):
+                                                continue
+
+                                        # 매칭 수행
+                                        if loaded_refs:
+                                            matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
                                             if matched_name:
                                                 clean_img = loaded_refs[matched_name]
-                                                collected_pil_images.append((extract_number(matched_name), clean_img, score))
+                                                collected_pil_images.append((extract_number(matched_name), clean_img))
                                     except: continue
                             
-                            # [HP 전용 중복 제거 및 최적화]
-                            final_images_map = {}
+                            unique_images = {}
+                            for key, img in collected_pil_images:
+                                if key not in unique_images: unique_images[key] = img
                             
-                            if option == "HP(K)" and collected_pil_images:
-                                for key, img, score in collected_pil_images:
-                                    # 같은 그림이 여러 번 나왔으면 점수가 더 좋은(낮은) 것만 유지
-                                    if key not in final_images_map:
-                                        final_images_map[key] = (img, score)
-                                    else:
-                                        if score < final_images_map[key][1]:
-                                            final_images_map[key] = (img, score)
-                            else:
-                                # CFF는 기존 방식대로
-                                for key, img, _ in collected_pil_images:
-                                    if key not in final_images_map:
-                                        final_images_map[key] = (img, 0)
-
-                            # 딕셔너리를 리스트로 변환 및 정렬
-                            final_sorted_imgs = [item[0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
+                            final_images = sorted(unique_images.items(), key=lambda x: x[0])
+                            sorted_imgs = [item[1] for item in final_images]
                             
-                            if final_sorted_imgs:
+                            if sorted_imgs:
                                 unit_size = 67 
                                 icon_size = 60 
                                 padding_top = 4 
                                 padding_left = (unit_size - icon_size) // 2 
-                                total_width = unit_size * len(final_sorted_imgs)
+                                total_width = unit_size * len(sorted_imgs)
                                 total_height = unit_size 
                                 merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                for idx, p_img in enumerate(final_sorted_imgs):
+                                for idx, p_img in enumerate(sorted_imgs):
                                     p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
                                     merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
                                 
@@ -961,7 +972,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! HP 정밀 필터링 & CFF 보존.")
+                    st.success("완료! 색상/모양 기반 로고 제거 적용.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
