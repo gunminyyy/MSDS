@@ -684,6 +684,8 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
     with col1:
         master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
         loaded_refs, folder_exists = get_reference_images()
+        if folder_exists and loaded_refs:
+            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
         elif not folder_exists:
             st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
@@ -1026,4 +1028,5 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
+
 
