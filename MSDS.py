@@ -16,18 +16,17 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (위치무시 & 전수비교 확정판)")
+st.title("MSDS 양식 변환기 (개수 정밀 제어판)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [1. 함수 정의 구역] - 최상단 배치 (에러 방지)
+# [1. 함수 정의 구역]
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 def safe_write_force(ws, row, col, value, center=False):
-    """안전하게 셀에 값을 쓰는 함수"""
     cell = ws.cell(row=row, column=col)
     try: cell.value = value
     except AttributeError:
@@ -39,7 +38,6 @@ def safe_write_force(ws, row, col, value, center=False):
                     break
             cell.value = value
         except: pass
-    
     if cell.font.name != '굴림': cell.font = FONT_STYLE
     if center: cell.alignment = ALIGN_CENTER
     else: cell.alignment = ALIGN_LEFT
@@ -143,10 +141,9 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수] - HP/CFF 이원화
+# [2. 이미지 함수] - Score 기반 필터링 추가
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
-    """[HP전용] 이미지 여백 제거"""
     try:
         if pil_img.mode != 'RGB':
             bg = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -161,7 +158,6 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 기존 확정 로직 (32x32)"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -175,7 +171,6 @@ def normalize_image_legacy(pil_img):
         return pil_img.resize((32, 32)).convert('L')
 
 def normalize_image_smart(pil_img):
-    """[HP전용] Auto-Crop + 64x64"""
     try:
         cropped_img = auto_crop(pil_img)
         return cropped_img.resize((64, 64)).convert('L')
@@ -198,16 +193,14 @@ def get_reference_images():
         return ref_images, True
     except: return {}, False
 
+# [핵심 수정] Score(차이값)도 함께 반환하도록 변경
 def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
     if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
-        # [HP] Threshold 대폭 완화: 75
-        # 이유: Auto-Crop을 해도 원본 화질이 나쁘면 차이가 클 수 있음.
-        # 로고는 어차피 생김새가 완전히 다르므로 75 정도면 걸러짐.
-        threshold = 75 
+        threshold = 75 # 탐색은 넓게 (나중에 필터링)
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -226,9 +219,11 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
                 best_score = diff
                 best_name = name
         
-        if best_score < threshold: return best_name
-        else: return None
-    except: return None
+        if best_score < threshold:
+            return best_name, best_score # Score 함께 반환
+        else:
+            return None, None
+    except: return None, None
 
 def extract_number(filename):
     nums = re.findall(r'\d+', filename)
@@ -858,8 +853,8 @@ with col_center:
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
                             # [이미지 처리 - HP(K) 필터 단순화]
-                            # 위치 계산 로직 제거 -> 1페이지 전수 조사 & 시각적 필터링
                             collected_pil_images = []
+                            # GHS 그림문자는 1페이지에 주로 있으므로 1페이지만 집중 스캔
                             scan_limit = min(1, len(doc)) 
                             
                             for page_index in range(scan_limit):
@@ -867,39 +862,69 @@ with col_center:
                                 for img_info in image_list:
                                     xref = img_info[0]
                                     
-                                    # [HP(K) 필터] - 좌표 계산 완전히 제거하고 1페이지 전체 스캔
-                                    # find_best_match_name 함수가 로고를 알아서 걸러줍니다.
+                                    # [HP(K) 필터]
+                                    # 복잡한 좌표 검색 제거 -> 안전한 Top 15% 컷만 적용
+                                    if option == "HP(K)" and page_index == 0:
+                                        try:
+                                            page = doc[page_index]
+                                            rect = page.get_image_bbox(img_info)
+                                            # 상단 15% (약 120px) 이내는 로고로 간주하여 차단
+                                            if rect.y1 < (page.rect.height * 0.15): continue
+                                        except: continue
                                     
                                     try:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                        matched_name = None
                                         
+                                        # 매칭 수행 (Score 포함 반환)
                                         if loaded_refs:
-                                            # Threshold를 완화한 HP 전용 로직 적용
-                                            matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
-                                        
-                                        if matched_name:
-                                            clean_img = loaded_refs[matched_name]
-                                            collected_pil_images.append((extract_number(matched_name), clean_img))
+                                            matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                            
+                                            # 매칭 성공 시 (score는 이미 threshold 통과함)
+                                            if matched_name:
+                                                # 원본 이미지 교체 (CFF 방식)
+                                                clean_img = loaded_refs[matched_name]
+                                                collected_pil_images.append((extract_number(matched_name), clean_img, score))
                                     except: continue
                             
-                            unique_images = {}
-                            for key, img in collected_pil_images:
-                                if key not in unique_images: unique_images[key] = img
+                            # [상대적 점수 필터링 (HP 전용)]
+                            # 진짜 그림문자와 가짜(로고 오인식)를 점수 차이로 구별
+                            final_images_map = {}
                             
-                            final_images = sorted(unique_images.items(), key=lambda x: x[0])
-                            sorted_imgs = [item[1] for item in final_images]
+                            if option == "HP(K)" and collected_pil_images:
+                                # 1. 최소 점수(Best Match) 찾기
+                                min_score = min(item[2] for item in collected_pil_images)
+                                
+                                for key, img, score in collected_pil_images:
+                                    # 2. 최소 점수와 20점 이상 차이나는 것은 가짜로 간주하고 버림
+                                    # 예: 진짜(15점), 가짜(55점) -> 55점 탈락
+                                    if score > min_score + 20: 
+                                        continue
+                                    
+                                    # 3. 중복 키 제거 (더 좋은 점수 우선)
+                                    if key not in final_images_map:
+                                        final_images_map[key] = (img, score)
+                                    else:
+                                        if score < final_images_map[key][1]:
+                                            final_images_map[key] = (img, score)
+                            else:
+                                # CFF는 기존 방식대로
+                                for key, img, _ in collected_pil_images:
+                                    if key not in final_images_map:
+                                        final_images_map[key] = (img, 0) # score 무시
+
+                            # 딕셔너리를 리스트로 변환 및 정렬
+                            final_sorted_imgs = [item[0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
                             
-                            if sorted_imgs:
+                            if final_sorted_imgs:
                                 unit_size = 67 
                                 icon_size = 60 
                                 padding_top = 4 
                                 padding_left = (unit_size - icon_size) // 2 
-                                total_width = unit_size * len(sorted_imgs)
+                                total_width = unit_size * len(final_sorted_imgs)
                                 total_height = unit_size 
                                 merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                for idx, p_img in enumerate(sorted_imgs):
+                                for idx, p_img in enumerate(final_sorted_imgs):
                                     p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
                                     merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
                                 
@@ -936,7 +961,7 @@ with col_center:
                 gc.collect()
 
                 if new_files:
-                    st.success("완료! HP 좌표기반 이미지 추출 & 엑셀 오류 해결.")
+                    st.success("완료! HP 정밀 필터링 & CFF 보존.")
         else:
             st.error("모든 파일을 업로드해주세요.")
 
