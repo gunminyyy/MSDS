@@ -16,11 +16,11 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (개수 정밀 제어판)")
+st.title("MSDS 양식 변환기 (하단 제한 해제 & 안전 확보)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [1. 함수 정의 구역]
+# [1. 함수 정의 구역] - 최상단 배치
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -141,7 +141,7 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수] - Score 기반 필터링 추가
+# [2. 이미지 함수] - HP/CFF 이원화 유지
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
     try:
@@ -158,6 +158,7 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
+    """[CFF전용] 확정 로직"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
@@ -171,6 +172,7 @@ def normalize_image_legacy(pil_img):
         return pil_img.resize((32, 32)).convert('L')
 
 def normalize_image_smart(pil_img):
+    """[HP전용] Auto-Crop + 64x64"""
     try:
         cropped_img = auto_crop(pil_img)
         return cropped_img.resize((64, 64)).convert('L')
@@ -193,14 +195,13 @@ def get_reference_images():
         return ref_images, True
     except: return {}, False
 
-# [핵심 수정] Score(차이값)도 함께 반환하도록 변경
 def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
     if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
-        threshold = 75 # 탐색은 넓게 (나중에 필터링)
+        threshold = 75 
     else:
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -220,7 +221,7 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
                 best_name = name
         
         if best_score < threshold:
-            return best_name, best_score # Score 함께 반환
+            return best_name, best_score
         else:
             return None, None
     except: return None, None
@@ -854,7 +855,6 @@ with col_center:
 
                             # [이미지 처리 - HP(K) 필터 단순화]
                             collected_pil_images = []
-                            # GHS 그림문자는 1페이지에 주로 있으므로 1페이지만 집중 스캔
                             scan_limit = min(1, len(doc)) 
                             
                             for page_index in range(scan_limit):
@@ -863,7 +863,6 @@ with col_center:
                                     xref = img_info[0]
                                     
                                     # [HP(K) 필터]
-                                    # 복잡한 좌표 검색 제거 -> 안전한 Top 15% 컷만 적용
                                     if option == "HP(K)" and page_index == 0:
                                         try:
                                             page = doc[page_index]
@@ -875,43 +874,39 @@ with col_center:
                                     try:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                        matched_name = None
                                         
-                                        # 매칭 수행 (Score 포함 반환)
                                         if loaded_refs:
                                             matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
                                             
-                                            # 매칭 성공 시 (score는 이미 threshold 통과함)
                                             if matched_name:
-                                                # 원본 이미지 교체 (CFF 방식)
                                                 clean_img = loaded_refs[matched_name]
                                                 collected_pil_images.append((extract_number(matched_name), clean_img, score))
                                     except: continue
                             
                             # [상대적 점수 필터링 (HP 전용)]
-                            # 진짜 그림문자와 가짜(로고 오인식)를 점수 차이로 구별
                             final_images_map = {}
                             
                             if option == "HP(K)" and collected_pil_images:
-                                # 1. 최소 점수(Best Match) 찾기
+                                # 1. 가장 좋은 점수(Best Match) 찾기
                                 min_score = min(item[2] for item in collected_pil_images)
                                 
                                 for key, img, score in collected_pil_images:
-                                    # 2. 최소 점수와 20점 이상 차이나는 것은 가짜로 간주하고 버림
-                                    # 예: 진짜(15점), 가짜(55점) -> 55점 탈락
-                                    if score > min_score + 20: 
+                                    # 2. 1등 점수 대비 +10점 이내인 것만 통과 (짝퉁 제거)
+                                    if score > min_score + 10: 
                                         continue
                                     
-                                    # 3. 중복 키 제거 (더 좋은 점수 우선)
+                                    # 3. 중복 제거 (더 좋은 점수 우선)
                                     if key not in final_images_map:
                                         final_images_map[key] = (img, score)
                                     else:
                                         if score < final_images_map[key][1]:
                                             final_images_map[key] = (img, score)
                             else:
-                                # CFF는 기존 방식대로
+                                # CFF는 기존 방식대로 (필터링 없음)
                                 for key, img, _ in collected_pil_images:
                                     if key not in final_images_map:
-                                        final_images_map[key] = (img, 0) # score 무시
+                                        final_images_map[key] = (img, 0)
 
                             # 딕셔너리를 리스트로 변환 및 정렬
                             final_sorted_imgs = [item[0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
