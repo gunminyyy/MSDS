@@ -101,19 +101,24 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map):
             safe_write_force(ws, current_row, 2, "") 
             safe_write_force(ws, current_row, 4, "")
 
-def fill_composition_data(ws, comp_data, cas_to_name_map):
-    start_row = 80; end_row = 123; limit = end_row - start_row + 1
+def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
+    start_row = 80; end_row = 123
+    if "E" in mode: end_row = 122
+    limit = end_row - start_row + 1
+
     for i in range(limit):
         current_row = start_row + i
         if i < len(comp_data):
             cas_no, concentration = comp_data[i]
             clean_cas = cas_no.replace(" ", "").strip()
             chem_name = cas_to_name_map.get(clean_cas, "")
+            
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 26.7
+            
+            # [K/E 공통] CAS NO 왼쪽 정렬 (center=False)
             safe_write_force(ws, current_row, 1, chem_name, center=False)
-            # [수정] 요청하신 대로 왼쪽 정렬(center=False) 적용
-            safe_write_force(ws, current_row, 4, cas_no, center=False)
+            safe_write_force(ws, current_row, 4, cas_no, center=False) 
             safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
         else:
             ws.row_dimensions[current_row].hidden = True
@@ -135,7 +140,7 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             safe_write_force(ws, current_row, 2, cell_data, center=False)
             ws.row_dimensions[current_row].hidden = False
             _, h = format_and_calc_height_sec47(cell_data)
-            if h < 26.7: h = 26.7 
+            if h < 24.0: h = 24.0 
             ws.row_dimensions[current_row].height = h
         else:
             safe_write_force(ws, current_row, 1, "")
@@ -143,7 +148,7 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수]
+# [2. 이미지 함수] - HP(K) 로직 보존
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
     try:
@@ -158,26 +163,21 @@ def auto_crop(pil_img):
     except: return pil_img
 
 def normalize_image_legacy(pil_img):
-    """[CFF전용] 확정 로직"""
     try:
         if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
             background = PILImage.new('RGB', pil_img.size, (255, 255, 255))
             if pil_img.mode == 'P': pil_img = pil_img.convert('RGBA')
             background.paste(pil_img, mask=pil_img.split()[3])
             pil_img = background
-        else:
-            pil_img = pil_img.convert('RGB')
+        else: pil_img = pil_img.convert('RGB')
         return pil_img.resize((32, 32)).convert('L')
-    except:
-        return pil_img.resize((32, 32)).convert('L')
+    except: return pil_img.resize((32, 32)).convert('L')
 
 def normalize_image_smart(pil_img):
-    """[HP전용] Auto-Crop + 64x64"""
     try:
         cropped_img = auto_crop(pil_img)
         return cropped_img.resize((64, 64)).convert('L')
-    except:
-        return pil_img.resize((64, 64)).convert('L')
+    except: return pil_img.resize((64, 64)).convert('L')
 
 def get_reference_images():
     img_folder = "reference_imgs"
@@ -217,17 +217,15 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     if mode == "HP(K)" or mode == "HP(E)":
         src_norm = normalize_image_smart(src_img)
         threshold = 80
-    else:
+    else: 
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
 
     try:
         src_arr = np.array(src_norm, dtype='int16')
         for name, ref_img in ref_images.items():
-            if "HP" in mode:
-                ref_norm = normalize_image_smart(ref_img)
-            else:
-                ref_norm = normalize_image_legacy(ref_img)
+            if "HP" in mode: ref_norm = normalize_image_smart(ref_img)
+            else: ref_norm = normalize_image_legacy(ref_img)
                 
             ref_arr = np.array(ref_norm, dtype='int16')
             diff = np.mean(np.abs(src_arr - ref_arr))
@@ -358,7 +356,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     else: 
         garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 방법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제"]
         sensitive_garbage_regex = [r"^시\s+", r"^또는\s+", r"^의\s+"]
-    
+
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
@@ -372,15 +370,19 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
                      m = p.match(txt)
                      if m: txt = txt[m.end():].strip(); changed = True
                      elif txt.lower().startswith(gb.lower()): txt = txt[len(gb):].strip(); changed = True
+            
             for pat in sensitive_garbage_regex:
                 m = re.search(pat, txt)
                 if m: txt = txt[m.end():].strip(); changed = True
+            
             txt = re.sub(r"^[:\.\)\s]+", "", txt)
             if not changed: break
+        
         if txt:
             if "HP" in mode: txt = txt.lstrip("-").strip()
             line['text'] = txt
             cleaned_lines.append(line)
+    
     if not cleaned_lines: return ""
 
     final_text = ""
@@ -448,7 +450,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}, "sec14": {}, "sec15": {}
     }
     
-    # [CFF(E) 로직]
     if mode == "CFF(E)":
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
         hazard_cls_lines = []
@@ -540,7 +541,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
         return result
 
-    # [CFF(K) / HP(K) 기존 로직] - 그대로 유지
     if mode == "CFF(K)":
         for i in range(len(all_lines)):
             if "적정선적명" in all_lines[i]['text']:
@@ -812,8 +812,8 @@ with col_center:
                 
                 code_map = {} 
                 cas_name_map = {} 
-                kor_data_map = {} # K용
-                eng_data_map = {} # E용
+                kor_data_map = {} 
+                eng_data_map = {} 
                 
                 try:
                     xls = pd.ExcelFile(master_data_file)
@@ -1008,7 +1008,7 @@ with col_center:
                             fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
                             fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
 
-                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map)
+                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
                             
                             active_substances = []
                             for c_data in parsed_data["composition_data"]:
@@ -1097,12 +1097,14 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
+                        # [공통] 이미지 처리
                         collected_pil_images = []
                         page = doc[0]
                         image_list = doc.get_page_images(0)
                         
                         for img_info in image_list:
                             xref = img_info[0]
+                            # HP(K) 필터: 상단 로고, 파란색, 정사각형 아님 제거
                             if option == "HP(K)":
                                 try:
                                     rect = page.get_image_bbox(img_info)
@@ -1125,6 +1127,7 @@ with col_center:
                                         collected_pil_images.append((extract_number(matched_name), clean_img, score))
                             except: continue
                         
+                        # 중복 제거 및 정렬
                         final_images_map = {}
                         if option == "HP(K)" and collected_pil_images:
                             min_score = min(item[2] for item in collected_pil_images)
@@ -1137,6 +1140,7 @@ with col_center:
                             for key, img, _ in collected_pil_images:
                                 if key not in final_images_map: final_images_map[key] = (img, 0)
                         
+                        # [오류수정 반영] 이미지 객체 추출
                         final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
 
                         if final_sorted_imgs:
@@ -1152,6 +1156,7 @@ with col_center:
                             img_byte_arr = io.BytesIO()
                             merged_img.save(img_byte_arr, format='PNG')
                             img_byte_arr.seek(0)
+                            # CFF(E)는 B22, 나머지는 B23
                             dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
