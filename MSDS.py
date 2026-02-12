@@ -148,7 +148,7 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수] - HP(K) 로직 보존
+# [2. 이미지 함수]
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
     try:
@@ -812,8 +812,8 @@ with col_center:
                 
                 code_map = {} 
                 cas_name_map = {} 
-                kor_data_map = {} 
-                eng_data_map = {} 
+                kor_data_map = {} # K용
+                eng_data_map = {} # E용
                 
                 try:
                     xls = pd.ExcelFile(master_data_file)
@@ -840,6 +840,7 @@ with col_center:
                                 code_val = str(row[target_col_name]).strip()
                                 code_map[code_key] = code_val
                 
+                    # [수정] K와 E 분기 확실하게 적용
                     if "K" in option:
                         sheet_kor = None
                         for sheet in xls.sheet_names:
@@ -858,7 +859,7 @@ with col_center:
                                             'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
                                             'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
                                         }
-                    else: # CFF(E)
+                    else: # E 모드 (CFF E 등)
                         sheet_eng = None
                         for sheet in xls.sheet_names:
                             if "영문" in sheet: sheet_eng = sheet; break
@@ -870,7 +871,7 @@ with col_center:
                                 if pd.notna(val_cas):
                                     c = str(val_cas).replace(" ", "").strip()
                                     n = str(val_name).strip() if pd.notna(val_name) else ""
-                                    cas_name_map[c] = n # CAS -> Name
+                                    cas_name_map[c] = n
                                     if n:
                                         eng_data_map[n] = {
                                             'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
@@ -1069,6 +1070,7 @@ with col_center:
                             r_match = re.search(r'([\d\.]+)', refract)
                             safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
+                            # [수정] kor_data_map 사용 강제
                             fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F')
                             fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G')
                             fill_regulatory_section(dest_ws, 269, 300, active_substances, kor_data_map, 'H')
@@ -1104,7 +1106,6 @@ with col_center:
                         
                         for img_info in image_list:
                             xref = img_info[0]
-                            # HP(K) 필터: 상단 로고, 파란색, 정사각형 아님 제거
                             if option == "HP(K)":
                                 try:
                                     rect = page.get_image_bbox(img_info)
@@ -1141,7 +1142,7 @@ with col_center:
                                 if key not in final_images_map: final_images_map[key] = (img, 0)
                         
                         # [오류수정 반영] 이미지 객체 추출
-                        final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
+                        final_sorted_imgs = [item[1][0] if isinstance(item[1], tuple) else item[1] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
 
                         if final_sorted_imgs:
                             unit_size = 67; icon_size = 60
@@ -1156,7 +1157,6 @@ with col_center:
                             img_byte_arr = io.BytesIO()
                             merged_img.save(img_byte_arr, format='PNG')
                             img_byte_arr.seek(0)
-                            # CFF(E)는 B22, 나머지는 B23
                             dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
@@ -1186,17 +1186,13 @@ with col_center:
     else:
         st.error("모든 파일을 업로드해주세요.")
 
-with col_right:
+if st.session_state['converted_files']:
     st.subheader("결과 다운로드")
-    if st.session_state['converted_files']:
-        for i, fname in enumerate(st.session_state['converted_files']):
-            c1, c2 = st.columns([3, 1])
-            with c1: st.text(f"📄 {fname}")
-            with c2:
-                st.download_button(
-                    label="받기", 
-                    data=st.session_state['download_data'][fname], 
-                    file_name=fname, 
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=i
-                )
+    for i, fname in enumerate(st.session_state['converted_files']):
+        st.download_button(
+            label=f"📥 {fname} 다운로드", 
+            data=st.session_state['download_data'][fname], 
+            file_name=fname, 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=i
+        )
