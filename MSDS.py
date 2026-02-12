@@ -786,7 +786,7 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
     with col2:
         template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
 
-product_name_input = st.text_input("제품명 입력 (B7, B10)")
+product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 st.write("") 
 
@@ -812,8 +812,8 @@ with col_center:
                 
                 code_map = {} 
                 cas_name_map = {} 
-                kor_data_map = {} # K용
-                eng_data_map = {} # E용
+                kor_data_map = {} 
+                eng_data_map = {} 
                 
                 try:
                     xls = pd.ExcelFile(master_data_file)
@@ -1070,7 +1070,6 @@ with col_center:
                             r_match = re.search(r'([\d\.]+)', refract)
                             safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
-                            # [수정] kor_data_map 사용 강제
                             fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F')
                             fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G')
                             fill_regulatory_section(dest_ws, 269, 300, active_substances, kor_data_map, 'H')
@@ -1099,13 +1098,14 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                        # [공통] 이미지 처리
+                        # [공통] 이미지 처리 - HP(K) 복원
                         collected_pil_images = []
                         page = doc[0]
                         image_list = doc.get_page_images(0)
                         
                         for img_info in image_list:
                             xref = img_info[0]
+                            # HP(K) 필터: 상단 로고, 파란색, 정사각형 아님 제거
                             if option == "HP(K)":
                                 try:
                                     rect = page.get_image_bbox(img_info)
@@ -1122,18 +1122,19 @@ with col_center:
                                     if is_blue_dominant(pil_img): continue
 
                                 if loaded_refs:
+                                    # [HP(K) 복원] 점수(score)도 함께 받아옴
                                     matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
                                     if matched_name:
                                         clean_img = loaded_refs[matched_name]
                                         collected_pil_images.append((extract_number(matched_name), clean_img, score))
                             except: continue
                         
-                        # 중복 제거 및 정렬
+                        # [HP(K) 복원] 점수 기반 필터링 및 중복 제거
                         final_images_map = {}
                         if option == "HP(K)" and collected_pil_images:
                             min_score = min(item[2] for item in collected_pil_images)
                             for key, img, score in collected_pil_images:
-                                if score > min_score + 25: continue
+                                if score > min_score + 25: continue # 1등과 차이 많이 나면 버림
                                 if key not in final_images_map: final_images_map[key] = (img, score)
                                 else:
                                     if score < final_images_map[key][1]: final_images_map[key] = (img, score)
@@ -1141,8 +1142,14 @@ with col_center:
                             for key, img, _ in collected_pil_images:
                                 if key not in final_images_map: final_images_map[key] = (img, 0)
                         
-                        # [오류수정 반영] 이미지 객체 추출
-                        final_sorted_imgs = [item[1][0] if isinstance(item[1], tuple) else item[1] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
+                        # [HP(K) 복원] 이미지 객체만 추출 (item[1]이 (img, score) 튜플일 수 있으므로 처리)
+                        final_sorted_imgs = []
+                        for item in sorted(final_images_map.items(), key=lambda x: x[0]):
+                            val = item[1]
+                            if isinstance(val, tuple): # (img, score) 형태면 img만
+                                final_sorted_imgs.append(val[0])
+                            else: # img만 있으면 그대로
+                                final_sorted_imgs.append(val)
 
                         if final_sorted_imgs:
                             unit_size = 67; icon_size = 60
@@ -1157,6 +1164,7 @@ with col_center:
                             img_byte_arr = io.BytesIO()
                             merged_img.save(img_byte_arr, format='PNG')
                             img_byte_arr.seek(0)
+                            # CFF(E)는 B22, 나머지는 B23
                             dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
@@ -1186,13 +1194,17 @@ with col_center:
     else:
         st.error("모든 파일을 업로드해주세요.")
 
-if st.session_state['converted_files']:
+with col_right:
     st.subheader("결과 다운로드")
-    for i, fname in enumerate(st.session_state['converted_files']):
-        st.download_button(
-            label=f"📥 {fname} 다운로드", 
-            data=st.session_state['download_data'][fname], 
-            file_name=fname, 
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=i
-        )
+    if st.session_state['converted_files']:
+        for i, fname in enumerate(st.session_state['converted_files']):
+            c1, c2 = st.columns([3, 1])
+            with c1: st.text(f"📄 {fname}")
+            with c2:
+                st.download_button(
+                    label="받기", 
+                    data=st.session_state['download_data'][fname], 
+                    file_name=fname, 
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=i
+                )
