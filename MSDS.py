@@ -17,7 +17,7 @@ import openpyxl.utils
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 스마트 변환기")
+st.title("MSDS 양식 변환기")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -116,6 +116,7 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 26.7
             
+            # [확인] CAS NO 왼쪽 정렬 (center=False)
             if "E" in mode:
                 safe_write_force(ws, current_row, 1, chem_name, center=False)
                 safe_write_force(ws, current_row, 4, cas_no, center=False) 
@@ -545,6 +546,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
         return result
 
+    # K Mode (CFF/HP)
     if mode == "CFF(K)":
         for i in range(len(all_lines)):
             if "적정선적명" in all_lines[i]['text']:
@@ -874,7 +876,7 @@ with col_center:
                                 if pd.notna(val_cas):
                                     c = str(val_cas).replace(" ", "").strip()
                                     n = str(val_name).strip() if pd.notna(val_name) else ""
-                                    cas_name_map[c] = n
+                                    cas_name_map[c] = n # CAS -> Name
                                     if n:
                                         eng_data_map[n] = {
                                             'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
@@ -1098,76 +1100,81 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                    collected_pil_images = []
-                    page = doc[0]
-                    image_list = doc.get_page_images(0)
-                    
-                    for img_info in image_list:
-                        xref = img_info[0]
-                        if option == "HP(K)":
-                            try:
-                                rect = page.get_image_bbox(img_info)
-                                if rect.y1 < (page.rect.height * 0.15): continue
-                                width = rect.x1 - rect.x0; height = rect.y1 - rect.y0
-                                if not is_square_shaped(width, height): continue
-                            except: continue
-
-                        try:
-                            base_image = doc.extract_image(xref)
-                            pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                            
-                            if option == "HP(K)":
-                                if is_blue_dominant(pil_img): continue
-
-                            if loaded_refs:
-                                matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
-                                if matched_name:
-                                    clean_img = loaded_refs[matched_name]
-                                    collected_pil_images.append((extract_number(matched_name), clean_img, score))
-                        except: continue
-                    
-                    final_images_map = {}
-                    if option == "HP(K)" and collected_pil_images:
-                        min_score = min(item[2] for item in collected_pil_images)
-                        for key, img, score in collected_pil_images:
-                            if score > min_score + 25: continue
-                            if key not in final_images_map: final_images_map[key] = (img, score)
-                            else:
-                                if score < final_images_map[key][1]: final_images_map[key] = (img, score)
-                    else:
-                        for key, img, _ in collected_pil_images:
-                            if key not in final_images_map: final_images_map[key] = (img, 0)
-                    
-                    final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
-
-                    if final_sorted_imgs:
-                        unit_size = 67; icon_size = 60
-                        padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                        total_width = unit_size * len(final_sorted_imgs)
-                        total_height = unit_size
-                        merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                        for idx, p_img in enumerate(final_sorted_imgs):
-                            p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                            merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                        # [공통] 이미지 처리
+                        collected_pil_images = []
+                        page = doc[0]
+                        image_list = doc.get_page_images(0)
                         
-                        img_byte_arr = io.BytesIO()
-                        merged_img.save(img_byte_arr, format='PNG')
-                        img_byte_arr.seek(0)
-                        dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+                        for img_info in image_list:
+                            xref = img_info[0]
+                            # HP(K) 필터: 상단 로고, 파란색, 정사각형 아님 제거
+                            if option == "HP(K)":
+                                try:
+                                    rect = page.get_image_bbox(img_info)
+                                    if rect.y1 < (page.rect.height * 0.15): continue
+                                    width = rect.x1 - rect.x0; height = rect.y1 - rect.y0
+                                    if not is_square_shaped(width, height): continue
+                                except: continue
 
-                    dest_wb.external_links = []
-                    output = io.BytesIO()
-                    dest_wb.save(output)
-                    output.seek(0)
-                    
-                    final_name = f"{product_name_input} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
-                    if final_name in new_download_data:
-                        final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]}.xlsx"
-                    new_download_data[final_name] = output.getvalue()
-                    new_files.append(final_name)
-                    
-                except Exception as e:
-                    st.error(f"오류 ({uploaded_file.name}): {e}")
+                            try:
+                                base_image = doc.extract_image(xref)
+                                pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                
+                                if option == "HP(K)":
+                                    if is_blue_dominant(pil_img): continue
+
+                                if loaded_refs:
+                                    matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                    if matched_name:
+                                        clean_img = loaded_refs[matched_name]
+                                        collected_pil_images.append((extract_number(matched_name), clean_img, score))
+                            except: continue
+                        
+                        # 중복 제거 및 정렬
+                        final_images_map = {}
+                        if option == "HP(K)" and collected_pil_images:
+                            min_score = min(item[2] for item in collected_pil_images)
+                            for key, img, score in collected_pil_images:
+                                if score > min_score + 25: continue
+                                if key not in final_images_map: final_images_map[key] = (img, score)
+                                else:
+                                    if score < final_images_map[key][1]: final_images_map[key] = (img, score)
+                        else:
+                            for key, img, _ in collected_pil_images:
+                                if key not in final_images_map: final_images_map[key] = (img, 0)
+                        
+                        # [오류수정 반영] 이미지 객체 추출
+                        final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
+
+                        if final_sorted_imgs:
+                            unit_size = 67; icon_size = 60
+                            padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                            total_width = unit_size * len(final_sorted_imgs)
+                            total_height = unit_size
+                            merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                            for idx, p_img in enumerate(final_sorted_imgs):
+                                p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                            
+                            img_byte_arr = io.BytesIO()
+                            merged_img.save(img_byte_arr, format='PNG')
+                            img_byte_arr.seek(0)
+                            # CFF(E)는 B22, 나머지는 B23
+                            dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+
+                        dest_wb.external_links = []
+                        output = io.BytesIO()
+                        dest_wb.save(output)
+                        output.seek(0)
+                        
+                        final_name = f"{product_name_input} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
+                        if final_name in new_download_data:
+                            final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]}.xlsx"
+                        new_download_data[final_name] = output.getvalue()
+                        new_files.append(final_name)
+                        
+                    except Exception as e:
+                        st.error(f"오류 ({uploaded_file.name}): {e}")
 
             st.session_state['converted_files'] = new_files
             st.session_state['download_data'] = new_download_data
@@ -1182,13 +1189,14 @@ with col_center:
     else:
         st.error("모든 파일을 업로드해주세요.")
 
-if st.session_state['converted_files']:
+with col_right:
     st.subheader("결과 다운로드")
-    for i, fname in enumerate(st.session_state['converted_files']):
-        st.download_button(
-            label=f"📥 {fname} 다운로드", 
-            data=st.session_state['download_data'][fname], 
-            file_name=fname, 
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=i
-        )
+    if st.session_state['converted_files']:
+        for i, fname in enumerate(st.session_state['converted_files']):
+            st.download_button(
+                label="받기", 
+                data=st.session_state['download_data'][fname], 
+                file_name=fname, 
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=i
+            )
