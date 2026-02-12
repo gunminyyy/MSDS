@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (로직 완전 분리 & 오류 수정판)")
+st.title("MSDS 양식 변환기 (오류 완벽 수정 & CFF 영문 탑재)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -115,16 +115,10 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 26.7
             
-            if "E" in mode:
-                safe_write_force(ws, current_row, 1, chem_name, center=False)
-                # [수정] CAS NO 왼쪽 정렬 (center=False)
-                safe_write_force(ws, current_row, 4, cas_no, center=False) 
-                safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
-            else:
-                safe_write_force(ws, current_row, 1, chem_name, center=False)
-                # [수정] CAS NO 왼쪽 정렬 (center=False)
-                safe_write_force(ws, current_row, 4, cas_no, center=False)
-                safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
+            # [수정] CAS NO (4열) 무조건 왼쪽 정렬 (center=False)
+            safe_write_force(ws, current_row, 1, chem_name, center=False)
+            safe_write_force(ws, current_row, 4, cas_no, center=False) 
+            safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
         else:
             ws.row_dimensions[current_row].hidden = True
             safe_write_force(ws, current_row, 1, "")
@@ -827,7 +821,6 @@ with col_center:
                 try:
                     xls = pd.ExcelFile(master_data_file)
                     
-                    # 1. 위험안전문구 시트 로드
                     target_sheet = None
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
@@ -840,7 +833,7 @@ with col_center:
                         df_code.columns = [str(c).replace(" ", "").upper() for c in df_code.columns]
                         col_c = 'CODE'; 
                         
-                        target_col_idx = 2 # 기본 3번째 열(C)
+                        target_col_idx = 2 
                         if len(df_code.columns) <= target_col_idx: target_col_idx = len(df_code.columns) - 1
                         target_col_name = df_code.columns[target_col_idx]
 
@@ -850,7 +843,6 @@ with col_center:
                                 code_val = str(row[target_col_name]).strip()
                                 code_map[code_key] = code_val
                 
-                # 2. 데이터 시트 로드
                     if "K" in option:
                         sheet_kor = None
                         for sheet in xls.sheet_names:
@@ -904,17 +896,14 @@ with col_center:
                         dest_wb.external_links = []
                         dest_ws._images = []
 
-                        # 초기화
                         for row in dest_ws.iter_rows():
                             for cell in row:
                                 if isinstance(cell, MergedCell): continue
                                 if cell.column == 2 and cell.data_type == 'f': cell.value = ""
 
-                        # [공통] 제품명
                         safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
                         safe_write_force(dest_ws, 9, 2, product_name_input, center=True)
                         
-                        # [CFF(E) 전용 입력]
                         if option == "CFF(E)":
                             if parsed_data["hazard_cls"]:
                                 clean_cls = "\n".join(parsed_data["hazard_cls"])
@@ -998,7 +987,6 @@ with col_center:
                             today_eng = datetime.now().strftime("%d. %b. %Y")
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
 
-                    # [CFF(K) / HP(K) 처리]
                     else:
                         if parsed_data["hazard_cls"]:
                             clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
@@ -1109,14 +1097,12 @@ with col_center:
                         today_str = datetime.now().strftime("%Y.%m.%d")
                         safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                    # [공통] 이미지 삽입
                     collected_pil_images = []
                     page = doc[0]
                     image_list = doc.get_page_images(0)
                     
                     for img_info in image_list:
                         xref = img_info[0]
-                        # HP(K) 필터: 상단 로고, 파란색, 정사각형 아님 제거
                         if option == "HP(K)":
                             try:
                                 rect = page.get_image_bbox(img_info)
@@ -1139,7 +1125,6 @@ with col_center:
                                     collected_pil_images.append((extract_number(matched_name), clean_img, score))
                         except: continue
                     
-                    # 중복 제거 및 정렬
                     final_images_map = {}
                     if option == "HP(K)" and collected_pil_images:
                         min_score = min(item[2] for item in collected_pil_images)
@@ -1152,7 +1137,6 @@ with col_center:
                         for key, img, _ in collected_pil_images:
                             if key not in final_images_map: final_images_map[key] = (img, 0)
                     
-                    # [오류수정 반영] 이미지 객체 추출
                     final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
 
                     if final_sorted_imgs:
@@ -1168,7 +1152,6 @@ with col_center:
                         img_byte_arr = io.BytesIO()
                         merged_img.save(img_byte_arr, format='PNG')
                         img_byte_arr.seek(0)
-                        # CFF(E)는 B22, 나머지는 B23
                         dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                     dest_wb.external_links = []
@@ -1198,7 +1181,6 @@ with col_center:
     else:
         st.error("모든 파일을 업로드해주세요.")
 
-# 결과 다운로드 버튼 표시
 if st.session_state['converted_files']:
     st.subheader("결과 다운로드")
     for i, fname in enumerate(st.session_state['converted_files']):
