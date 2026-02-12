@@ -214,12 +214,13 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
+    # [수정] 이미지 매칭 임계값 조정
     if mode == "HP(K)" or mode == "HP(E)":
         src_norm = normalize_image_smart(src_img)
-        threshold = 80
+        threshold = 60 # [수정] 80 -> 60으로 하향 조정 (이미지 매칭 완화)
     else: 
         src_norm = normalize_image_legacy(src_img)
-        threshold = 65
+        threshold = 60
 
     try:
         src_arr = np.array(src_norm, dtype='int16')
@@ -366,10 +367,10 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             changed = False
             for gb in garbage_heads:
                 if txt.lower().replace(" ","").startswith(gb.lower().replace(" ","")):
-                     p = re.compile(r"^" + re.escape(gb).replace(r"\ ", r"\s*") + r"[\s\.:]*", re.IGNORECASE)
-                     m = p.match(txt)
-                     if m: txt = txt[m.end():].strip(); changed = True
-                     elif txt.lower().startswith(gb.lower()): txt = txt[len(gb):].strip(); changed = True
+                      p = re.compile(r"^" + re.escape(gb).replace(r"\ ", r"\s*") + r"[\s\.:]*", re.IGNORECASE)
+                      m = p.match(txt)
+                      if m: txt = txt[m.end():].strip(); changed = True
+                      elif txt.lower().startswith(gb.lower()): txt = txt[len(gb):].strip(); changed = True
             
             for pat in sensitive_garbage_regex:
                 m = re.search(pat, txt)
@@ -821,26 +822,29 @@ with col_center:
                     target_sheet = None
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
-                    if not target_sheet:
-                         for sheet in xls.sheet_names:
-                            df_tmp = pd.read_excel(master_data_file, sheet_name=sheet, nrows=5)
-                            if 'CODE' in [str(c).upper() for c in df_tmp.columns]: target_sheet = sheet; break
+                    
+                    # [수정 시작] 위험 안전문구 시트 처리 로직 변경
                     if target_sheet:
+                        # 헤더 없이 읽어서 인덱스로 접근
                         df_code = pd.read_excel(master_data_file, sheet_name=target_sheet)
-                        df_code.columns = [str(c).replace(" ", "").upper() for c in df_code.columns]
-                        col_c = 'CODE'; 
                         
-                        target_col_idx = 2 
-                        if len(df_code.columns) <= target_col_idx: target_col_idx = len(df_code.columns) - 1
-                        target_col_name = df_code.columns[target_col_idx]
-
+                        # "K" 모드이면 B열(1), 아니면 C열(2) 사용
+                        if "K" in option:
+                            target_col_idx = 1
+                        else:
+                            target_col_idx = 2
+                        
                         for _, row in df_code.iterrows():
-                            if pd.notna(row[col_c]):
-                                code_key = str(row[col_c]).replace(" ","").upper().strip()
-                                code_val = str(row[target_col_name]).strip()
-                                code_map[code_key] = code_val
-                
-                    # [수정] K와 E 분기 확실하게 적용
+                            # A열(0)은 코드
+                            if pd.notna(row.iloc[0]):
+                                code_key = str(row.iloc[0]).replace(" ","").upper().strip()
+                                # 지정된 컬럼 값 가져오기
+                                if len(row) > target_col_idx:
+                                    val = row.iloc[target_col_idx]
+                                    code_val = str(val).strip() if pd.notna(val) else ""
+                                    code_map[code_key] = code_val
+                    # [수정 끝]
+                    
                     if "K" in option:
                         sheet_kor = None
                         for sheet in xls.sheet_names:
