@@ -208,19 +208,18 @@ def is_blue_dominant(pil_img):
 def is_square_shaped(width, height):
     if height == 0: return False
     ratio = width / height
-    # [수정] 비율 조건 완화 (0.8~1.2 -> 0.6~1.4)
-    return 0.6 < ratio < 1.4
+    return 0.5 < ratio < 2.0  # [수정] 비율 조건 아주 넓게 완화
 
 def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
     # [수정] 이미지 매칭 임계값(Threshold) 재설정
-    # 차이가 적을수록(0에 가까울수록) 좋은 것임.
-    # 기존 60은 너무 엄격하여 인식이 안 됨 -> 95로 대폭 완화 (차이를 더 많이 허용)
+    # 차이가 적을수록(0) 좋음. 
+    # 95 -> 120으로 상향 (차이가 꽤 커도 허용, 즉 매칭 기준을 완화)
     if mode == "HP(K)" or mode == "HP(E)":
         src_norm = normalize_image_smart(src_img)
-        threshold = 95 
+        threshold = 120 
     else: 
         src_norm = normalize_image_legacy(src_img)
         threshold = 60
@@ -988,7 +987,7 @@ with col_center:
                         else: # CFF(K) / HP(K)
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
                             
-                            # [수정] B10 정렬 변경 (center=False -> 왼쪽 정렬)
+                            # [수정] B10 왼쪽 정렬 (center=False)
                             safe_write_force(dest_ws, 10, 2, product_name_input, center=False)
                             
                             if parsed_data["hazard_cls"]:
@@ -1107,21 +1106,25 @@ with col_center:
                         
                         for img_info in image_list:
                             xref = img_info[0]
-                            # HP(K) 필터: 상단 로고, 파란색, 정사각형 아님 제거
+                            # HP(K) 필터: 상단 로고, 파란색, 정사각형 아님 제거 -> [제거] 조건 완화
                             if option == "HP(K)":
                                 try:
                                     rect = page.get_image_bbox(img_info)
-                                    if rect.y1 < (page.rect.height * 0.15): continue
+                                    # [수정] 상단 15% 제한 제거 (헤더에 있는 경우 고려)
+                                    # if rect.y1 < (page.rect.height * 0.15): continue
+                                    
                                     width = rect.x1 - rect.x0; height = rect.y1 - rect.y0
-                                    if not is_square_shaped(width, height): continue
+                                    # [수정] 비율 조건 더 완화 (0.5 ~ 2.0)
+                                    if not (0.5 < (width / height) < 2.0): continue 
                                 except: continue
 
                             try:
                                 base_image = doc.extract_image(xref)
                                 pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                 
-                                if option == "HP(K)":
-                                    if is_blue_dominant(pil_img): continue
+                                # [수정] 파란색 필터 제거 (색상 오인식 방지)
+                                # if option == "HP(K)":
+                                #     if is_blue_dominant(pil_img): continue
 
                                 if loaded_refs:
                                     # [HP(K) 복원] 점수(score)도 함께 받아옴
