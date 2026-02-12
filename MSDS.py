@@ -16,7 +16,7 @@ from datetime import datetime
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (오류 완벽 수정 & CFF 영문 탑재)")
+st.title("MSDS 양식 변환기 (Final Syntax Fix)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -115,7 +115,7 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 26.7
             
-            # [수정] CAS NO (4열) 무조건 왼쪽 정렬 (center=False)
+            # [확인] CAS NO 왼쪽 정렬 (center=False)
             safe_write_force(ws, current_row, 1, chem_name, center=False)
             safe_write_force(ws, current_row, 4, cas_no, center=False) 
             safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
@@ -449,6 +449,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}, "sec14": {}, "sec15": {}
     }
     
+    # ---------------------------
+    # [CFF(E) 로직]
+    # ---------------------------
     if mode == "CFF(E)":
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
         hazard_cls_lines = []
@@ -482,7 +485,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         comp_text = extract_section_smart(all_lines, "3. Composition", "4. FIRST-AID", mode)
         regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
         regex_conc = re.compile(r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)')
-        
         comp_lines = comp_text.split('\n')
         for line in comp_lines:
             cas_m = regex_cas.search(line)
@@ -507,17 +509,14 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         if data["B134"]: data["B134"] = data["B134"].replace("substance or mixture", "")
 
         data["B136"] = extract_section_smart(all_lines, "5.3 Advice for firefighters", "6. Accidental", mode)
-        
         data["B140"] = extract_section_smart(all_lines, "6.1 Personal precautions", "6.2 Environmental", mode)
         if data["B140"]: data["B140"] = data["B140"].replace("equipment and emergency procedures", "")
 
         data["B142"] = extract_section_smart(all_lines, "6.2 Environmental", "6.3 Methods", mode)
-        
         data["B144"] = extract_section_smart(all_lines, "6.3 Methods", "7. Handling", mode)
         if data["B144"]: data["B144"] = data["B144"].replace("and cleaning up", "")
 
         data["B148"] = extract_section_smart(all_lines, "7.1 Precautions", "7.2 Conditions", mode)
-        
         data["B150"] = extract_section_smart(all_lines, "7.2 Conditions", "8. Exposure", mode)
         if data["B150"]: data["B150"] = data["B150"].replace("any incompatibilities", "")
 
@@ -544,6 +543,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
         return result
 
+    # ---------------------------
+    # [CFF(K) / HP(K) 기존 로직]
+    # ---------------------------
     if mode == "CFF(K)":
         for i in range(len(all_lines)):
             if "적정선적명" in all_lines[i]['text']:
@@ -833,7 +835,7 @@ with col_center:
                         df_code.columns = [str(c).replace(" ", "").upper() for c in df_code.columns]
                         col_c = 'CODE'; 
                         
-                        target_col_idx = 2 
+                        target_col_idx = 2 # 기본 3번째 열(C)
                         if len(df_code.columns) <= target_col_idx: target_col_idx = len(df_code.columns) - 1
                         target_col_name = df_code.columns[target_col_idx]
 
@@ -896,14 +898,17 @@ with col_center:
                         dest_wb.external_links = []
                         dest_ws._images = []
 
+                        # 초기화
                         for row in dest_ws.iter_rows():
                             for cell in row:
                                 if isinstance(cell, MergedCell): continue
                                 if cell.column == 2 and cell.data_type == 'f': cell.value = ""
 
+                        # [공통] 제품명
                         safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
                         safe_write_force(dest_ws, 9, 2, product_name_input, center=True)
                         
+                        # [CFF(E) 전용 입력]
                         if option == "CFF(E)":
                             if parsed_data["hazard_cls"]:
                                 clean_cls = "\n".join(parsed_data["hazard_cls"])
@@ -987,52 +992,53 @@ with col_center:
                             today_eng = datetime.now().strftime("%d. %b. %Y")
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
 
-                    else:
-                        if parsed_data["hazard_cls"]:
-                            clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
-                            safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
-                            dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
+                        # [K 버전 처리]
+                        else:
+                            if parsed_data["hazard_cls"]:
+                                clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
+                                safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
+                                dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
 
-                        signal_final = parsed_data["signal_word"] if parsed_data["signal_word"] else ""
-                        safe_write_force(dest_ws, 24, 2, signal_final, center=False) 
+                            signal_final = parsed_data["signal_word"] if parsed_data["signal_word"] else ""
+                            safe_write_force(dest_ws, 24, 2, signal_final, center=False) 
 
-                        if option == "HP(K)":
-                            safe_write_force(dest_ws, 38, 1, "예방", center=False)
-                            safe_write_force(dest_ws, 50, 1, "대응", center=False)
-                            safe_write_force(dest_ws, 64, 1, "저장", center=False)
-                            safe_write_force(dest_ws, 70, 1, "폐기", center=False)
+                            if option == "HP(K)":
+                                safe_write_force(dest_ws, 38, 1, "예방", center=False)
+                                safe_write_force(dest_ws, 50, 1, "대응", center=False)
+                                safe_write_force(dest_ws, 64, 1, "저장", center=False)
+                                safe_write_force(dest_ws, 70, 1, "폐기", center=False)
 
-                        fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map)
-                        fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
-                        fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
-                        fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
-                        fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
+                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map)
+                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
+                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
+                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
+                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
 
-                        fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map)
-                        
-                        active_substances = []
-                        for c_data in parsed_data["composition_data"]:
-                            cas = c_data[0].replace(" ", "").strip()
-                            if cas in cas_name_map:
-                                name = cas_name_map[cas]
-                                if name: active_substances.append(name)
+                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map)
+                            
+                            active_substances = []
+                            for c_data in parsed_data["composition_data"]:
+                                cas = c_data[0].replace(" ", "").strip()
+                                if cas in cas_name_map:
+                                    name = cas_name_map[cas]
+                                    if name: active_substances.append(name)
 
-                        sec_data = parsed_data["sec4_to_7"]
-                        for cell_addr, raw_text in sec_data.items():
-                            formatted_txt, row_h = format_and_calc_height_sec47(raw_text)
-                            try:
-                                col_str = re.match(r"([A-Z]+)", cell_addr).group(1)
-                                row_num = int(re.search(r"(\d+)", cell_addr).group(1))
-                                col_idx = openpyxl.utils.column_index_from_string(col_str)
-                                safe_write_force(dest_ws, row_num, col_idx, "")
-                                if formatted_txt:
-                                    safe_write_force(dest_ws, row_num, col_idx, formatted_txt, center=False)
-                                    dest_ws.row_dimensions[row_num].height = row_h
-                                    try:
-                                        cell_a = dest_ws.cell(row=row_num, column=1)
-                                        if cell_a.value: cell_a.value = str(cell_a.value).strip()
-                                        cell_a.alignment = ALIGN_TITLE
-                                    except: pass
+                            sec_data = parsed_data["sec4_to_7"]
+                            for cell_addr, raw_text in sec_data.items():
+                                formatted_txt, row_h = format_and_calc_height_sec47(raw_text)
+                                try:
+                                    col_str = re.match(r"([A-Z]+)", cell_addr).group(1)
+                                    row_num = int(re.search(r"(\d+)", cell_addr).group(1))
+                                    col_idx = openpyxl.utils.column_index_from_string(col_str)
+                                    safe_write_force(dest_ws, row_num, col_idx, "")
+                                    if formatted_txt:
+                                        safe_write_force(dest_ws, row_num, col_idx, formatted_txt, center=False)
+                                        dest_ws.row_dimensions[row_num].height = row_h
+                                        try:
+                                            cell_a = dest_ws.cell(row=row_num, column=1)
+                                            if cell_a.value: cell_a.value = str(cell_a.value).strip()
+                                            cell_a.alignment = ALIGN_TITLE
+                                        except: pass
                             except Exception as e: pass
 
                         s8 = parsed_data["sec8"]
@@ -1097,6 +1103,7 @@ with col_center:
                         today_str = datetime.now().strftime("%Y.%m.%d")
                         safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
+                    # [공통] 이미지 삽입
                     collected_pil_images = []
                     page = doc[0]
                     image_list = doc.get_page_images(0)
