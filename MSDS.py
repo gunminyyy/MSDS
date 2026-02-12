@@ -17,11 +17,11 @@ import openpyxl.utils
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (UI 복구 & 오류 수정)")
+st.title("MSDS 스마트 변환기")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [1. 유틸리티 함수] (변경 없음)
+# [1. 유틸리티 함수]
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -116,7 +116,6 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 26.7
             
-            # CAS NO (4열) 왼쪽 정렬(center=False) 유지
             if "E" in mode:
                 safe_write_force(ws, current_row, 1, chem_name, center=False)
                 safe_write_force(ws, current_row, 4, cas_no, center=False) 
@@ -153,7 +152,7 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수] (변경 없음)
+# [2. 이미지 함수]
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
     try:
@@ -247,7 +246,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [3. 파서 함수 (공통)] (변경 없음)
+# [3. 파서 함수]
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
@@ -546,7 +545,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
         return result
 
-    # K Mode (CFF/HP)
     if mode == "CFF(K)":
         for i in range(len(all_lines)):
             if "적정선적명" in all_lines[i]['text']:
@@ -593,7 +591,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 if "공급자" not in l and "회사명" not in l:
                     clean_l = l.replace("-", "").strip()
                     if clean_l: result["hazard_cls"].append(clean_l)
-    else: # CFF(K)
+    else: 
         lines_hp = full_text_hp.split('\n')
         state = 0
         for l in lines_hp:
@@ -1100,77 +1098,76 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                        # [공통] 이미지 처리 (K/E 모두 동일한 필터링 사용)
-                        collected_pil_images = []
-                        page = doc[0]
-                        image_list = doc.get_page_images(0)
-                        
-                        for img_info in image_list:
-                            xref = img_info[0]
-                            if option == "HP(K)":
-                                try:
-                                    rect = page.get_image_bbox(img_info)
-                                    if rect.y1 < (page.rect.height * 0.15): continue
-                                    width = rect.x1 - rect.x0; height = rect.y1 - rect.y0
-                                    if not is_square_shaped(width, height): continue
-                                except: continue
-
+                    collected_pil_images = []
+                    page = doc[0]
+                    image_list = doc.get_page_images(0)
+                    
+                    for img_info in image_list:
+                        xref = img_info[0]
+                        if option == "HP(K)":
                             try:
-                                base_image = doc.extract_image(xref)
-                                pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                
-                                if option == "HP(K)":
-                                    if is_blue_dominant(pil_img): continue
-
-                                if loaded_refs:
-                                    matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
-                                    if matched_name:
-                                        clean_img = loaded_refs[matched_name]
-                                        collected_pil_images.append((extract_number(matched_name), clean_img, score))
+                                rect = page.get_image_bbox(img_info)
+                                if rect.y1 < (page.rect.height * 0.15): continue
+                                width = rect.x1 - rect.x0; height = rect.y1 - rect.y0
+                                if not is_square_shaped(width, height): continue
                             except: continue
-                        
-                        final_images_map = {}
-                        if option == "HP(K)" and collected_pil_images:
-                            min_score = min(item[2] for item in collected_pil_images)
-                            for key, img, score in collected_pil_images:
-                                if score > min_score + 25: continue
-                                if key not in final_images_map: final_images_map[key] = (img, score)
-                                else:
-                                    if score < final_images_map[key][1]: final_images_map[key] = (img, score)
-                        else:
-                            for key, img, _ in collected_pil_images:
-                                if key not in final_images_map: final_images_map[key] = (img, 0)
-                        
-                        final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
 
-                        if final_sorted_imgs:
-                            unit_size = 67; icon_size = 60
-                            padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                            total_width = unit_size * len(final_sorted_imgs)
-                            total_height = unit_size
-                            merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                            for idx, p_img in enumerate(final_sorted_imgs):
-                                p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                        try:
+                            base_image = doc.extract_image(xref)
+                            pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                             
-                            img_byte_arr = io.BytesIO()
-                            merged_img.save(img_byte_arr, format='PNG')
-                            img_byte_arr.seek(0)
-                            dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+                            if option == "HP(K)":
+                                if is_blue_dominant(pil_img): continue
 
-                        dest_wb.external_links = []
-                        output = io.BytesIO()
-                        dest_wb.save(output)
-                        output.seek(0)
+                            if loaded_refs:
+                                matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                if matched_name:
+                                    clean_img = loaded_refs[matched_name]
+                                    collected_pil_images.append((extract_number(matched_name), clean_img, score))
+                        except: continue
+                    
+                    final_images_map = {}
+                    if option == "HP(K)" and collected_pil_images:
+                        min_score = min(item[2] for item in collected_pil_images)
+                        for key, img, score in collected_pil_images:
+                            if score > min_score + 25: continue
+                            if key not in final_images_map: final_images_map[key] = (img, score)
+                            else:
+                                if score < final_images_map[key][1]: final_images_map[key] = (img, score)
+                    else:
+                        for key, img, _ in collected_pil_images:
+                            if key not in final_images_map: final_images_map[key] = (img, 0)
+                    
+                    final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
+
+                    if final_sorted_imgs:
+                        unit_size = 67; icon_size = 60
+                        padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                        total_width = unit_size * len(final_sorted_imgs)
+                        total_height = unit_size
+                        merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                        for idx, p_img in enumerate(final_sorted_imgs):
+                            p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                            merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
                         
-                        final_name = f"{product_name_input} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
-                        if final_name in new_download_data:
-                            final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]}.xlsx"
-                        new_download_data[final_name] = output.getvalue()
-                        new_files.append(final_name)
-                        
-                    except Exception as e:
-                        st.error(f"오류 ({uploaded_file.name}): {e}")
+                        img_byte_arr = io.BytesIO()
+                        merged_img.save(img_byte_arr, format='PNG')
+                        img_byte_arr.seek(0)
+                        dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+
+                    dest_wb.external_links = []
+                    output = io.BytesIO()
+                    dest_wb.save(output)
+                    output.seek(0)
+                    
+                    final_name = f"{product_name_input} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
+                    if final_name in new_download_data:
+                        final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]}.xlsx"
+                    new_download_data[final_name] = output.getvalue()
+                    new_files.append(final_name)
+                    
+                except Exception as e:
+                    st.error(f"오류 ({uploaded_file.name}): {e}")
 
             st.session_state['converted_files'] = new_files
             st.session_state['download_data'] = new_download_data
