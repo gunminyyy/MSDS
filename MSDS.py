@@ -13,20 +13,19 @@ import numpy as np
 import gc
 import math
 from datetime import datetime
-import openpyxl.utils # openpyxl.utils 명시적 임포트
+import openpyxl.utils
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (Final Syntax Corrected)")
+st.title("MSDS 양식 변환기 (UI 복구 & 오류 수정)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
-# [1. 유틸리티 함수]
+# [1. 유틸리티 함수] (변경 없음)
 # --------------------------------------------------------------------------
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
-ALIGN_TITLE = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
 def safe_write_force(ws, row, col, value, center=False):
     cell = ws.cell(row=row, column=col)
@@ -117,7 +116,7 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 26.7
             
-            # [수정 적용] CAS NO (4열) 무조건 왼쪽 정렬 (center=False)
+            # CAS NO (4열) 왼쪽 정렬(center=False) 유지
             if "E" in mode:
                 safe_write_force(ws, current_row, 1, chem_name, center=False)
                 safe_write_force(ws, current_row, 4, cas_no, center=False) 
@@ -154,7 +153,7 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
             ws.row_dimensions[current_row].hidden = True
 
 # --------------------------------------------------------------------------
-# [2. 이미지 함수]
+# [2. 이미지 함수] (변경 없음)
 # --------------------------------------------------------------------------
 def auto_crop(pil_img):
     try:
@@ -248,7 +247,7 @@ def extract_number(filename):
     return int(nums[0]) if nums else 999
 
 # --------------------------------------------------------------------------
-# [3. 파서 함수]
+# [3. 파서 함수 (공통)] (변경 없음)
 # --------------------------------------------------------------------------
 def get_clustered_lines(doc):
     all_lines = []
@@ -547,7 +546,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
         return result
 
-    # K Mode
+    # K Mode (CFF/HP)
     if mode == "CFF(K)":
         for i in range(len(all_lines)):
             if "적정선적명" in all_lines[i]['text']:
@@ -594,7 +593,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 if "공급자" not in l and "회사명" not in l:
                     clean_l = l.replace("-", "").strip()
                     if clean_l: result["hazard_cls"].append(clean_l)
-    else: 
+    else: # CFF(K)
         lines_hp = full_text_hp.split('\n')
         state = 0
         for l in lines_hp:
@@ -793,7 +792,7 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
     with col2:
         template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
 
-product_name_input = st.text_input("제품명 입력 (B7, B10)")
+product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 st.write("") 
 
@@ -819,8 +818,8 @@ with col_center:
                 
                 code_map = {} 
                 cas_name_map = {} 
-                kor_data_map = {} # K용
-                eng_data_map = {} # E용
+                kor_data_map = {} 
+                eng_data_map = {} 
                 
                 try:
                     xls = pd.ExcelFile(master_data_file)
@@ -865,7 +864,7 @@ with col_center:
                                             'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
                                             'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
                                         }
-                    else: # 영문 (CFF E)
+                    else: # CFF(E)
                         sheet_eng = None
                         for sheet in xls.sheet_names:
                             if "영문" in sheet: sheet_eng = sheet; break
@@ -877,7 +876,7 @@ with col_center:
                                 if pd.notna(val_cas):
                                     c = str(val_cas).replace(" ", "").strip()
                                     n = str(val_name).strip() if pd.notna(val_name) else ""
-                                    cas_name_map[c] = n # CAS -> Name
+                                    cas_name_map[c] = n
                                     if n:
                                         eng_data_map[n] = {
                                             'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
@@ -1101,6 +1100,7 @@ with col_center:
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
+                        # [공통] 이미지 처리 (K/E 모두 동일한 필터링 사용)
                         collected_pil_images = []
                         page = doc[0]
                         image_list = doc.get_page_images(0)
