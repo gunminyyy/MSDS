@@ -13,10 +13,11 @@ import numpy as np
 import gc
 import math
 from datetime import datetime
+import openpyxl.utils # openpyxl.utils 명시적 임포트
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
-st.title("MSDS 양식 변환기 (Final Syntax Fix)")
+st.title("MSDS 양식 변환기 (Final Syntax Corrected)")
 st.markdown("---")
 
 # --------------------------------------------------------------------------
@@ -25,6 +26,7 @@ st.markdown("---")
 FONT_STYLE = Font(name='굴림', size=8)
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 ALIGN_CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
+ALIGN_TITLE = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
 def safe_write_force(ws, row, col, value, center=False):
     cell = ws.cell(row=row, column=col)
@@ -115,10 +117,15 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 26.7
             
-            # [확인] CAS NO 왼쪽 정렬 (center=False)
-            safe_write_force(ws, current_row, 1, chem_name, center=False)
-            safe_write_force(ws, current_row, 4, cas_no, center=False) 
-            safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
+            # [수정 적용] CAS NO (4열) 무조건 왼쪽 정렬 (center=False)
+            if "E" in mode:
+                safe_write_force(ws, current_row, 1, chem_name, center=False)
+                safe_write_force(ws, current_row, 4, cas_no, center=False) 
+                safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
+            else:
+                safe_write_force(ws, current_row, 1, chem_name, center=False)
+                safe_write_force(ws, current_row, 4, cas_no, center=False)
+                safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
         else:
             ws.row_dimensions[current_row].hidden = True
             safe_write_force(ws, current_row, 1, "")
@@ -449,9 +456,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}, "sec14": {}, "sec15": {}
     }
     
-    # ---------------------------
-    # [CFF(E) 로직]
-    # ---------------------------
     if mode == "CFF(E)":
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
         hazard_cls_lines = []
@@ -543,9 +547,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
         return result
 
-    # ---------------------------
-    # [CFF(K) / HP(K) 기존 로직]
-    # ---------------------------
+    # K Mode
     if mode == "CFF(K)":
         for i in range(len(all_lines)):
             if "적정선적명" in all_lines[i]['text']:
@@ -835,7 +837,7 @@ with col_center:
                         df_code.columns = [str(c).replace(" ", "").upper() for c in df_code.columns]
                         col_c = 'CODE'; 
                         
-                        target_col_idx = 2 # 기본 3번째 열(C)
+                        target_col_idx = 2 
                         if len(df_code.columns) <= target_col_idx: target_col_idx = len(df_code.columns) - 1
                         target_col_name = df_code.columns[target_col_idx]
 
@@ -898,17 +900,14 @@ with col_center:
                         dest_wb.external_links = []
                         dest_ws._images = []
 
-                        # 초기화
                         for row in dest_ws.iter_rows():
                             for cell in row:
                                 if isinstance(cell, MergedCell): continue
                                 if cell.column == 2 and cell.data_type == 'f': cell.value = ""
 
-                        # [공통] 제품명
                         safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
                         safe_write_force(dest_ws, 9, 2, product_name_input, center=True)
                         
-                        # [CFF(E) 전용 입력]
                         if option == "CFF(E)":
                             if parsed_data["hazard_cls"]:
                                 clean_cls = "\n".join(parsed_data["hazard_cls"])
@@ -992,8 +991,7 @@ with col_center:
                             today_eng = datetime.now().strftime("%d. %b. %Y")
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
 
-                        # [K 버전 처리]
-                        else:
+                        else: # CFF(K) / HP(K)
                             if parsed_data["hazard_cls"]:
                                 clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
                                 safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
@@ -1014,7 +1012,7 @@ with col_center:
                             fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
                             fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
 
-                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map)
+                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
                             
                             active_substances = []
                             for c_data in parsed_data["composition_data"]:
@@ -1039,141 +1037,140 @@ with col_center:
                                             if cell_a.value: cell_a.value = str(cell_a.value).strip()
                                             cell_a.alignment = ALIGN_TITLE
                                         except: pass
-                            except Exception as e: pass
+                                except Exception as e: pass
 
-                        s8 = parsed_data["sec8"]
-                        val148 = s8["B148"].replace("해당없음", "자료없음")
-                        lines148 = [l.strip() for l in val148.split('\n') if l.strip()]
-                        safe_write_force(dest_ws, 148, 2, ""); safe_write_force(dest_ws, 149, 2, ""); dest_ws.row_dimensions[149].hidden = True
-                        if lines148:
-                            safe_write_force(dest_ws, 148, 2, lines148[0], center=False)
-                            if len(lines148) > 1:
-                                safe_write_force(dest_ws, 149, 2, "\n".join(lines148[1:]), center=False)
-                                dest_ws.row_dimensions[149].hidden = False
-                        
-                        val150 = s8["B150"].replace("해당없음", "자료없음")
-                        val150 = re.sub(r"^규정[:\s]*", "", val150).strip()
-                        safe_write_force(dest_ws, 150, 2, val150, center=False)
+                            s8 = parsed_data["sec8"]
+                            val148 = s8["B148"].replace("해당없음", "자료없음")
+                            lines148 = [l.strip() for l in val148.split('\n') if l.strip()]
+                            safe_write_force(dest_ws, 148, 2, ""); safe_write_force(dest_ws, 149, 2, ""); dest_ws.row_dimensions[149].hidden = True
+                            if lines148:
+                                safe_write_force(dest_ws, 148, 2, lines148[0], center=False)
+                                if len(lines148) > 1:
+                                    safe_write_force(dest_ws, 149, 2, "\n".join(lines148[1:]), center=False)
+                                    dest_ws.row_dimensions[149].hidden = False
+                            
+                            val150 = s8["B150"].replace("해당없음", "자료없음")
+                            val150 = re.sub(r"^규정[:\s]*", "", val150).strip()
+                            safe_write_force(dest_ws, 150, 2, val150, center=False)
 
-                        s9 = parsed_data["sec9"]
-                        safe_write_force(dest_ws, 163, 2, s9["B163"], center=False)
-                        
-                        if option == "HP(K)":
-                            flash = s9["B169"]
-                            flash_num = re.findall(r'([<>]?\s*\d{2,3})', flash)
-                            safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
-                        else:
-                            flash = s9["B169"]
-                            flash_num = re.findall(r'(\d{2,3})', flash)
-                            safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
-                        
-                        gravity = s9["B176"].replace("(20℃)", "").replace("(물=1)", "")
-                        g_match = re.search(r'([\d\.]+)', gravity)
-                        safe_write_force(dest_ws, 176, 2, f"{g_match.group(1)} ± 0.01" if g_match else "", center=False)
-                        
-                        refract = s9["B182"].replace("(20℃)", "")
-                        r_match = re.search(r'([\d\.]+)', refract)
-                        safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
-
-                        fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F')
-                        fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G')
-                        fill_regulatory_section(dest_ws, 269, 300, active_substances, kor_data_map, 'H')
-                        fill_regulatory_section(dest_ws, 316, 348, active_substances, kor_data_map, 'P')
-                        fill_regulatory_section(dest_ws, 353, 385, active_substances, kor_data_map, 'P')
-                        fill_regulatory_section(dest_ws, 392, 426, active_substances, kor_data_map, 'T')
-                        fill_regulatory_section(dest_ws, 428, 460, active_substances, kor_data_map, 'U')
-                        fill_regulatory_section(dest_ws, 465, 497, active_substances, kor_data_map, 'V')
-
-                        for r in range(261, 268): dest_ws.row_dimensions[r].hidden = True
-                        for r in range(349, 352): dest_ws.row_dimensions[r].hidden = True
-                        dest_ws.row_dimensions[386].hidden = True
-                        for r in range(461, 464): dest_ws.row_dimensions[r].hidden = True
-
-                        s14 = parsed_data["sec14"]
-                        un_val = re.sub(r"\D", "", s14["UN"])
-                        safe_write_force(dest_ws, 512, 2, un_val, center=False)
-                        
-                        name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
-                        safe_write_force(dest_ws, 513, 2, name_val, center=False)
-
-                        s15 = parsed_data["sec15"]
-                        if option == "CFF(K)":
-                            safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
-
-                        today_str = datetime.now().strftime("%Y.%m.%d")
-                        safe_write_force(dest_ws, 542, 2, today_str, center=False)
-
-                    # [공통] 이미지 삽입
-                    collected_pil_images = []
-                    page = doc[0]
-                    image_list = doc.get_page_images(0)
-                    
-                    for img_info in image_list:
-                        xref = img_info[0]
-                        if option == "HP(K)":
-                            try:
-                                rect = page.get_image_bbox(img_info)
-                                if rect.y1 < (page.rect.height * 0.15): continue
-                                width = rect.x1 - rect.x0; height = rect.y1 - rect.y0
-                                if not is_square_shaped(width, height): continue
-                            except: continue
-
-                        try:
-                            base_image = doc.extract_image(xref)
-                            pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                            s9 = parsed_data["sec9"]
+                            safe_write_force(dest_ws, 163, 2, s9["B163"], center=False)
                             
                             if option == "HP(K)":
-                                if is_blue_dominant(pil_img): continue
-
-                            if loaded_refs:
-                                matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
-                                if matched_name:
-                                    clean_img = loaded_refs[matched_name]
-                                    collected_pil_images.append((extract_number(matched_name), clean_img, score))
-                        except: continue
-                    
-                    final_images_map = {}
-                    if option == "HP(K)" and collected_pil_images:
-                        min_score = min(item[2] for item in collected_pil_images)
-                        for key, img, score in collected_pil_images:
-                            if score > min_score + 25: continue
-                            if key not in final_images_map: final_images_map[key] = (img, score)
+                                flash = s9["B169"]
+                                flash_num = re.findall(r'([<>]?\s*\d{2,3})', flash)
+                                safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
                             else:
-                                if score < final_images_map[key][1]: final_images_map[key] = (img, score)
-                    else:
-                        for key, img, _ in collected_pil_images:
-                            if key not in final_images_map: final_images_map[key] = (img, 0)
-                    
-                    final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
+                                flash = s9["B169"]
+                                flash_num = re.findall(r'(\d{2,3})', flash)
+                                safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
+                            
+                            gravity = s9["B176"].replace("(20℃)", "").replace("(물=1)", "")
+                            g_match = re.search(r'([\d\.]+)', gravity)
+                            safe_write_force(dest_ws, 176, 2, f"{g_match.group(1)} ± 0.01" if g_match else "", center=False)
+                            
+                            refract = s9["B182"].replace("(20℃)", "")
+                            r_match = re.search(r'([\d\.]+)', refract)
+                            safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
-                    if final_sorted_imgs:
-                        unit_size = 67; icon_size = 60
-                        padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                        total_width = unit_size * len(final_sorted_imgs)
-                        total_height = unit_size
-                        merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                        for idx, p_img in enumerate(final_sorted_imgs):
-                            p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                            merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                            fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F')
+                            fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G')
+                            fill_regulatory_section(dest_ws, 269, 300, active_substances, kor_data_map, 'H')
+                            fill_regulatory_section(dest_ws, 316, 348, active_substances, kor_data_map, 'P')
+                            fill_regulatory_section(dest_ws, 353, 385, active_substances, kor_data_map, 'P')
+                            fill_regulatory_section(dest_ws, 392, 426, active_substances, kor_data_map, 'T')
+                            fill_regulatory_section(dest_ws, 428, 460, active_substances, kor_data_map, 'U')
+                            fill_regulatory_section(dest_ws, 465, 497, active_substances, kor_data_map, 'V')
+
+                            for r in range(261, 268): dest_ws.row_dimensions[r].hidden = True
+                            for r in range(349, 352): dest_ws.row_dimensions[r].hidden = True
+                            dest_ws.row_dimensions[386].hidden = True
+                            for r in range(461, 464): dest_ws.row_dimensions[r].hidden = True
+
+                            s14 = parsed_data["sec14"]
+                            un_val = re.sub(r"\D", "", s14["UN"])
+                            safe_write_force(dest_ws, 512, 2, un_val, center=False)
+                            
+                            name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
+                            safe_write_force(dest_ws, 513, 2, name_val, center=False)
+
+                            s15 = parsed_data["sec15"]
+                            if option == "CFF(K)":
+                                safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
+
+                            today_str = datetime.now().strftime("%Y.%m.%d")
+                            safe_write_force(dest_ws, 542, 2, today_str, center=False)
+
+                        collected_pil_images = []
+                        page = doc[0]
+                        image_list = doc.get_page_images(0)
                         
-                        img_byte_arr = io.BytesIO()
-                        merged_img.save(img_byte_arr, format='PNG')
-                        img_byte_arr.seek(0)
-                        dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+                        for img_info in image_list:
+                            xref = img_info[0]
+                            if option == "HP(K)":
+                                try:
+                                    rect = page.get_image_bbox(img_info)
+                                    if rect.y1 < (page.rect.height * 0.15): continue
+                                    width = rect.x1 - rect.x0; height = rect.y1 - rect.y0
+                                    if not is_square_shaped(width, height): continue
+                                except: continue
 
-                    dest_wb.external_links = []
-                    output = io.BytesIO()
-                    dest_wb.save(output)
-                    output.seek(0)
-                    
-                    final_name = f"{product_name_input} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
-                    if final_name in new_download_data:
-                        final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]}.xlsx"
-                    new_download_data[final_name] = output.getvalue()
-                    new_files.append(final_name)
-                    
-                except Exception as e:
-                    st.error(f"오류 ({uploaded_file.name}): {e}")
+                            try:
+                                base_image = doc.extract_image(xref)
+                                pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                
+                                if option == "HP(K)":
+                                    if is_blue_dominant(pil_img): continue
+
+                                if loaded_refs:
+                                    matched_name, score = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                    if matched_name:
+                                        clean_img = loaded_refs[matched_name]
+                                        collected_pil_images.append((extract_number(matched_name), clean_img, score))
+                            except: continue
+                        
+                        final_images_map = {}
+                        if option == "HP(K)" and collected_pil_images:
+                            min_score = min(item[2] for item in collected_pil_images)
+                            for key, img, score in collected_pil_images:
+                                if score > min_score + 25: continue
+                                if key not in final_images_map: final_images_map[key] = (img, score)
+                                else:
+                                    if score < final_images_map[key][1]: final_images_map[key] = (img, score)
+                        else:
+                            for key, img, _ in collected_pil_images:
+                                if key not in final_images_map: final_images_map[key] = (img, 0)
+                        
+                        final_sorted_imgs = [item[1][0] for item in sorted(final_images_map.items(), key=lambda x: x[0])]
+
+                        if final_sorted_imgs:
+                            unit_size = 67; icon_size = 60
+                            padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                            total_width = unit_size * len(final_sorted_imgs)
+                            total_height = unit_size
+                            merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                            for idx, p_img in enumerate(final_sorted_imgs):
+                                p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                            
+                            img_byte_arr = io.BytesIO()
+                            merged_img.save(img_byte_arr, format='PNG')
+                            img_byte_arr.seek(0)
+                            dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+
+                        dest_wb.external_links = []
+                        output = io.BytesIO()
+                        dest_wb.save(output)
+                        output.seek(0)
+                        
+                        final_name = f"{product_name_input} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
+                        if final_name in new_download_data:
+                            final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]}.xlsx"
+                        new_download_data[final_name] = output.getvalue()
+                        new_files.append(final_name)
+                        
+                    except Exception as e:
+                        st.error(f"오류 ({uploaded_file.name}): {e}")
 
             st.session_state['converted_files'] = new_files
             st.session_state['download_data'] = new_download_data
