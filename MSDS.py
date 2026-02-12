@@ -208,16 +208,19 @@ def is_blue_dominant(pil_img):
 def is_square_shaped(width, height):
     if height == 0: return False
     ratio = width / height
-    return 0.8 < ratio < 1.2
+    # [수정] 비율 조건 완화 (0.8~1.2 -> 0.6~1.4)
+    return 0.6 < ratio < 1.4
 
 def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
-    # [수정] 이미지 매칭 임계값 조정
+    # [수정] 이미지 매칭 임계값(Threshold) 재설정
+    # 차이가 적을수록(0에 가까울수록) 좋은 것임.
+    # 기존 60은 너무 엄격하여 인식이 안 됨 -> 95로 대폭 완화 (차이를 더 많이 허용)
     if mode == "HP(K)" or mode == "HP(E)":
         src_norm = normalize_image_smart(src_img)
-        threshold = 60 # [수정] 80 -> 60으로 하향 조정 (이미지 매칭 완화)
+        threshold = 95 
     else: 
         src_norm = normalize_image_legacy(src_img)
         threshold = 60
@@ -823,27 +826,20 @@ with col_center:
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
                     
-                    # [수정 시작] 위험 안전문구 시트 처리 로직 변경
                     if target_sheet:
-                        # 헤더 없이 읽어서 인덱스로 접근
                         df_code = pd.read_excel(master_data_file, sheet_name=target_sheet)
-                        
-                        # "K" 모드이면 B열(1), 아니면 C열(2) 사용
                         if "K" in option:
                             target_col_idx = 1
                         else:
                             target_col_idx = 2
                         
                         for _, row in df_code.iterrows():
-                            # A열(0)은 코드
                             if pd.notna(row.iloc[0]):
                                 code_key = str(row.iloc[0]).replace(" ","").upper().strip()
-                                # 지정된 컬럼 값 가져오기
                                 if len(row) > target_col_idx:
                                     val = row.iloc[target_col_idx]
                                     code_val = str(val).strip() if pd.notna(val) else ""
                                     code_map[code_key] = code_val
-                    # [수정 끝]
                     
                     if "K" in option:
                         sheet_kor = None
@@ -991,7 +987,9 @@ with col_center:
 
                         else: # CFF(K) / HP(K)
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
-                            safe_write_force(dest_ws, 10, 2, product_name_input, center=True)
+                            
+                            # [수정] B10 정렬 변경 (center=False -> 왼쪽 정렬)
+                            safe_write_force(dest_ws, 10, 2, product_name_input, center=False)
                             
                             if parsed_data["hazard_cls"]:
                                 clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
