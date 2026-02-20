@@ -54,15 +54,18 @@ def get_description_smart(code, code_map):
         if found_texts: return " ".join(found_texts)
     return ""
 
-def calculate_smart_height_basic(text): 
+# [수정] 모드(국/영문)에 따라 1줄당 글자수 다르게 적용 및 4줄 높이 추가
+def calculate_smart_height_basic(text, mode="CFF(K)"): 
     if not text: return 19.2
     
-    # 단순 \n 개수가 아닌, 글자 수 기반 시각적 줄바꿈 계산
     lines = str(text).split('\n')
     total_visual_lines = 0
     
-    # [수정] 엑셀 D열 기준 1줄당 글자 수 제한을 40 -> 45로 완화
-    char_limit = 45.0
+    # 영문은 글자 폭이 좁아 1줄에 약 70자 진입 가능, 국문은 45자 유지
+    if "E" in mode:
+        char_limit = 70.0
+    else:
+        char_limit = 45.0
     
     for line in lines:
         if len(line) == 0:
@@ -75,8 +78,10 @@ def calculate_smart_height_basic(text):
         return 19.2
     elif total_visual_lines == 2: 
         return 26.0
-    else: 
+    elif total_visual_lines == 3: 
         return 36.0
+    else: 
+        return 45.0 # 4줄 이상일 경우 45.0 적용
 
 def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
@@ -105,7 +110,8 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
     height = (total_visual_lines * 10) + 10
     return final_text, height
 
-def fill_fixed_range(ws, start_row, end_row, codes, code_map):
+# [수정] 모드 파라미터 전달받도록 수정
+def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
     unique_codes = []; seen = set()
     for c in codes:
         clean = c.replace(" ", "").upper().strip()
@@ -117,7 +123,10 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map):
             code = unique_codes[i]
             desc = get_description_smart(code, code_map)
             ws.row_dimensions[current_row].hidden = False
-            final_height = calculate_smart_height_basic(desc)
+            
+            # [수정] 높이 계산 시 mode 전달
+            final_height = calculate_smart_height_basic(desc, mode)
+            
             ws.row_dimensions[current_row].height = final_height
             safe_write_force(ws, current_row, 2, code, center=False)
             safe_write_force(ws, current_row, 4, desc, center=False)
@@ -964,11 +973,11 @@ with col_center:
                             if parsed_data["signal_word"]:
                                 safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
 
-                            fill_fixed_range(dest_ws, 24, 36, parsed_data["h_codes"], code_map)
-                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
-                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
-                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
-                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
+                            fill_fixed_range(dest_ws, 24, 36, parsed_data["h_codes"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map, mode=option)
                             
                             fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
                             
@@ -1056,11 +1065,11 @@ with col_center:
                                 safe_write_force(dest_ws, 64, 1, "저장", center=False)
                                 safe_write_force(dest_ws, 70, 1, "폐기", center=False)
 
-                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map)
-                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map)
-                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map)
-                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map)
-                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map)
+                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map, mode=option)
 
                             fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
                             
