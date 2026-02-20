@@ -56,13 +56,27 @@ def get_description_smart(code, code_map):
 
 def calculate_smart_height_basic(text): 
     if not text: return 19.2
-    explicit_lines = str(text).count('\n') + 1
-    final_lines = max(explicit_lines, 1)
     
-    # [수정] 행 높이 설정 변경 (1줄: 19.2, 2줄: 26, 3줄 이상: 36)
-    if final_lines == 1: return 19.2
-    elif final_lines == 2: return 26.0
-    else: return 36.0
+    # [수정] 단순 \n 개수가 아닌, 글자 수 기반 시각적 줄바꿈 계산
+    lines = str(text).split('\n')
+    total_visual_lines = 0
+    
+    # 엑셀 D열 기준 1줄당 약 40글자(공백 포함)로 계산
+    char_limit = 40.0
+    
+    for line in lines:
+        if len(line) == 0:
+            total_visual_lines += 1
+        else:
+            total_visual_lines += math.ceil(len(line) / char_limit)
+            
+    # 계산된 시각적 줄 수에 따른 행 높이 반환
+    if total_visual_lines <= 1: 
+        return 19.2
+    elif total_visual_lines == 2: 
+        return 26.0
+    else: 
+        return 36.0
 
 def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
@@ -648,7 +662,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             if "2.유해성" in l_ns and "위험성" in l_ns: state = 1; continue 
             if "나.예방조치" in l_ns: state = 0; continue
             if state == 1 and l.strip():
-                # [수정] "가.유해성·위험성 분류" 제목 완벽 제거 로직
                 if "가.유해성" in l_ns and "분류" in l_ns:
                     check_header = re.sub(r'[가-하][\.\s]*유해성[\s\.\·ㆍ\-]*위험성[\s\.\·ㆍ\-]*분류[\s:]*', '', l).strip()
                     if not check_header: continue 
