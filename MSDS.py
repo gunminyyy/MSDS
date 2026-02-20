@@ -342,6 +342,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     if not target_lines: return ""
     
     if mode == "CFF(E)":
+        # [수정] CFF(E) Garbage Headers 추가 (요청 사항 반영)
         garbage_heads = [
             "Classification of the substance or mixture", "Classification of the substance or", "mixture",
             "Precautionary statements", "Hazard pictograms", "Signal word", 
@@ -350,7 +351,10 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             "Special note for doctors", "Extinguishing media", "Special hazards arising from the", "Advice for firefighters",
             "Personal precautions, protective", "Environmental precautions", "Methods and materials for containment",
             "Precautions for safe handling", "Conditions for safe storage, including",
-            "Internal regulations", "ACGIH regulations", "Biological exposure standards"
+            "Internal regulations", "ACGIH regulations", "Biological exposure standards",
+            # [추가됨]
+            "arising from the", ", protective", "precautions", "and materials for containment", 
+            "for safe handling", "for safe storage, including", "conditions for safe storage, including"
         ]
         sensitive_garbage_regex = []
     elif mode == "HP(K)":
@@ -393,8 +397,18 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
         final_text = cleaned_lines[0]['text']
         for i in range(1, len(cleaned_lines)):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
+            
             if mode == "CFF(E)":
-                final_text += "\n" + curr['text']
+                # [수정] CFF(E) 줄바꿈 로직 개선 (기본 Space, 특정 조건 Newline)
+                prev_txt = prev['text'].strip(); curr_txt = curr['text'].strip()
+                # 문장이 끝나거나, 다음 문장이 Bullet/대문자시작일 때 줄바꿈
+                ends_with_period = prev_txt.endswith('.')
+                starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.|[A-Z]\.)", curr_txt)
+                
+                if ends_with_period or starts_with_bullet:
+                    final_text += "\n" + curr_txt
+                else:
+                    final_text += " " + curr_txt
             else: 
                 prev_txt = prev['text'].strip(); curr_txt = curr['text'].strip()
                 ends_with_sentence = re.search(r"(\.|시오|음|함|것|임|있음|주의|금지|참조|따르시오|마시오)$", prev_txt)
@@ -453,12 +467,24 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}, "sec14": {}, "sec15": {}
     }
     
+    # [수정] Section 9 위치 미리 찾기 (CFF E "Color" 오류 방지)
+    sec9_lines = []
+    start_9 = -1; end_9 = -1
+    for i, line in enumerate(all_lines):
+        if "9. Physical" in line['text'] or "9. 물리화학" in line['text']: start_9 = i
+        if "10. Stability" in line['text'] or "10. 안정성" in line['text']: end_9 = i; break
+    if start_9 != -1:
+        if end_9 == -1: end_9 = len(all_lines)
+        sec9_lines = all_lines[start_9:end_9]
+
     if mode == "CFF(E)":
+        # [수정] Section 2.1 ~ 2.2 범위 및 필터링 수정
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
         hazard_cls_lines = []
         for line in hazard_cls_text.split('\n'):
             line = line.strip()
             if not line: continue
+            # [필터링] 2.1 Classification... 및 mixture 제거
             if "2.1 Classification" in line: continue
             if line.lower() == "mixture": continue
             hazard_cls_lines.append(line)
@@ -468,20 +494,21 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         m_sig = re.search(r"Signal word\s*[:\-\s]*([A-Za-z]+)", full_text, re.IGNORECASE)
         if m_sig: result["signal_word"] = m_sig.group(1).capitalize()
         
-        h_text = extract_section_smart(all_lines, "Hazard statements", "Precautionary statements", mode)
-        result["h_codes"] = list(set(re.findall(r'\b(H\d{3}[a-zA-Z]*)\b', h_text)))
-
-        p_prev_text = extract_section_smart(all_lines, "Precautionary statements", "Response", mode)
-        result["p_prev"] = list(set(re.findall(r'\b(P\d{3}[a-zA-Z]*)\b', p_prev_text)))
-        
-        p_resp_text = extract_section_smart(all_lines, "Response", "Storage", mode)
-        result["p_resp"] = list(set(re.findall(r'\b(P\d{3}[a-zA-Z]*)\b', p_resp_text)))
-        
-        p_stor_text = extract_section_smart(all_lines, "Storage", "Disposal", mode)
-        result["p_stor"] = list(set(re.findall(r'\b(P\d{3}[a-zA-Z]*)\b', p_stor_text)))
-        
-        p_disp_text = extract_section_smart(all_lines, "Disposal", "2.3 Other hazards", mode)
-        result["p_disp"] = list(set(re.findall(r'\b(P\d{3}[a-zA-Z]*)\b', p_disp_text)))
+        # [수정] H/P 코드 추출 로직 교체 (CFF(K) 로직 사용)
+        regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+        all_matches = regex_code.findall(full_text)
+        seen = set()
+        for code_raw in all_matches:
+            code = code_raw.replace(" ", "").upper()
+            if code in seen: continue
+            seen.add(code)
+            if code.startswith("H"): result["h_codes"].append(code)
+            elif code.startswith("P"):
+                p = code.split("+")[0]
+                if p.startswith("P2"): result["p_prev"].append(code)
+                elif p.startswith("P3"): result["p_resp"].append(code)
+                elif p.startswith("P4"): result["p_stor"].append(code)
+                elif p.startswith("P5"): result["p_disp"].append(code)
 
         comp_text = extract_section_smart(all_lines, "3. Composition", "4. FIRST-AID", mode)
         regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
@@ -528,18 +555,26 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         s8["B156"] = extract_section_smart(all_lines, "ACGIH regulations", "Biological exposure", mode)
         result["sec8"] = s8
 
+        # [수정] Section 9 추출 시 sec9_lines 사용 (범위 제한)
         s9 = {}
-        s9["B170"] = extract_section_smart(all_lines, "Color", "Odor", mode)
-        s9["B176"] = extract_section_smart(all_lines, "Flash point", "Evaporation rate", mode)
-        s9["B183"] = extract_section_smart(all_lines, "Specific gravity", "Partition coefficient", mode)
-        s9["B189"] = extract_section_smart(all_lines, "Refractive index", "10. Stability", mode)
+        s9["B170"] = extract_section_smart(sec9_lines, "Color", "Odor", mode)
+        s9["B176"] = extract_section_smart(sec9_lines, "Flash point", "Evaporation rate", mode)
+        
+        # [수정] Specific Gravity, Refractive Index 제목 제거
+        b183_raw = extract_section_smart(sec9_lines, "Specific gravity", "Partition coefficient", mode)
+        s9["B183"] = b183_raw.replace("(20/20℃)", "").replace("(Water=1)", "").strip()
+        
+        b189_raw = extract_section_smart(sec9_lines, "Refractive index", "10. Stability", mode)
+        s9["B189"] = b189_raw.replace("(20℃)", "").strip()
+        
         result["sec9"] = s9
 
         s14 = {}
         un_text = extract_section_smart(all_lines, "14.1 UN number", "14.2 Proper", mode)
         s14["UN"] = re.sub(r'\D', '', un_text)
         name_text = extract_section_smart(all_lines, "14.2 Proper", "14.3 Transport", mode)
-        s14["NAME"] = name_text
+        # [수정] 괄호 및 내용 제거
+        s14["NAME"] = re.sub(r'\([^)]*\)', '', name_text).strip()
         result["sec14"] = s14
 
         return result
@@ -715,15 +750,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         b150_raw = extract_section_smart(sec8_lines, "ACGIH", "생물학적", mode)
     result["sec8"] = {"B148": b148_raw, "B150": b150_raw}
 
-    sec9_lines = []
-    start_9 = -1; end_9 = -1
-    for i, line in enumerate(all_lines):
-        if "9. 물리화학" in line['text']: start_9 = i
-        if "10. 안정성" in line['text']: end_9 = i; break
-    if start_9 != -1:
-        if end_9 == -1: end_9 = len(all_lines)
-        sec9_lines = all_lines[start_9:end_9]
-        
     if mode == "HP(K)":
         result["sec9"] = {
             "B163": extract_section_smart(sec9_lines, "- 색", "나. 냄새", mode),
@@ -731,7 +757,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             "B176": extract_section_smart(sec9_lines, "비중", "거. n-옥탄올", mode),
             "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"], mode)
         }
-    else:
+    elif mode == "CFF(K)":
         result["sec9"] = {
             "B163": extract_section_smart(sec9_lines, "색상", "나. 냄새", mode),
             "B169": extract_section_smart(sec9_lines, "인화점", "아. 증발속도", mode),
@@ -900,7 +926,8 @@ with col_center:
 
                         if option == "CFF(E)":
                             safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
-                            safe_write_force(dest_ws, 9, 2, product_name_input, center=True)
+                            # [수정] B9 왼쪽 정렬
+                            safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
                             
                             if parsed_data["hazard_cls"]:
                                 clean_cls = "\n".join(parsed_data["hazard_cls"])
@@ -978,8 +1005,8 @@ with col_center:
 
                             s14 = parsed_data["sec14"]
                             safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
-                            name_clean = re.sub(r'[\(\)\d]', '', s14["NAME"]).strip()
-                            safe_write_force(dest_ws, 532, 2, name_clean, center=False)
+                            # [수정] 괄호 제거된 NAME 사용
+                            safe_write_force(dest_ws, 532, 2, s14["NAME"], center=False)
 
                             today_eng = datetime.now().strftime("%d. %b. %Y")
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
@@ -1098,36 +1125,28 @@ with col_center:
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
                         # [HP(K) 이미지 복원: 과거 코드 로직 적용]
-                        # 1. 일단 1페이지의 모든 이미지를 수집
-                        # 2. 파란색/정사각형 등 필터 적용
-                        # 3. 매칭 수행
                         collected_pil_images = []
                         page = doc[0]
                         image_list = doc.get_page_images(0)
                         
                         for img_info in image_list:
                             xref = img_info[0]
-                            # HP(K) 필터: 예전 코드에는 위치 제한(y1 등)이 없었으므로 제거함
-                            
                             try:
                                 base_image = doc.extract_image(xref)
                                 pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                 
-                                # 예전 코드 로직: 이미지 추출 -> 필터 -> 매칭 순서
                                 if option == "HP(K)":
                                     if is_blue_dominant(pil_img): continue
                                     w, h = pil_img.size
                                     if not is_square_shaped(w, h): continue
 
                                 if loaded_refs:
-                                    # find_best_match_name 내부에서 threshold=70 적용됨 (복원)
                                     matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
                                     if matched_name:
                                         clean_img = loaded_refs[matched_name]
                                         collected_pil_images.append((extract_number(matched_name), clean_img))
                             except: continue
                         
-                        # 중복 제거 및 정렬
                         unique_images = {}
                         for key, img in collected_pil_images:
                             if key not in unique_images: unique_images[key] = img
