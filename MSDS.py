@@ -404,7 +404,6 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
             if mode == "CFF(E)":
-                # [수정] 대문자나 불릿으로 시작하면 강제 줄바꿈 (원본이 한줄이었으면 이 로직을 타지 않음)
                 curr_txt = curr['text'].strip()
                 starts_with_bullet_or_cap = re.match(r"^(\-|•|\*|\d+\.|[A-Z])", curr_txt)
                 
@@ -516,7 +515,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 elif p.startswith("P4"): result["p_stor"].append(code)
                 elif p.startswith("P5"): result["p_disp"].append(code)
 
-        # [수정] CFF(E) 성분 데이터(Section 3) 추출 방식 전면 개편 (findall 활용)
         comp_text = extract_section_smart(all_lines, "3. Composition", "4. FIRST-AID", mode)
         regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
         regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
@@ -524,16 +522,13 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         cas_list = regex_cas.findall(comp_text)
         conc_list = []
         
-        # CAS 번호를 텍스트에서 제거하여 농도 숫자로 오인되는 것 방지
         comp_text_no_cas = regex_cas.sub(" ", comp_text)
         for match in regex_conc.finditer(comp_text_no_cas):
             val1 = float(match.group(1))
             val2 = float(match.group(2))
-            # EC 번호 등(100 이상)은 제외하고 실제 농도(%)만 수집
             if val1 <= 100 and val2 <= 100:
                 conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
                 
-        # 순서대로 CAS와 농도를 짝지어줌
         max_len = max(len(cas_list), len(conc_list))
         for i in range(max_len):
             c_val = cas_list[i] if i < len(cas_list) else ""
@@ -651,8 +646,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             if "2.유해성" in l_ns and "위험성" in l_ns: state = 1; continue 
             if "나.예방조치" in l_ns: state = 0; continue
             if state == 1 and l.strip():
+                # [수정] "가.유해성·위험성 분류" 제목 완벽 제거 로직
                 if "가.유해성" in l_ns and "분류" in l_ns:
-                    check_header = re.sub(r'[가-하][\.\s]*유해성[\s\.]*위험성[\s\.]*분류', '', l).strip()
+                    check_header = re.sub(r'[가-하][\.\s]*유해성[\s\.\·ㆍ\-]*위험성[\s\.\·ㆍ\-]*분류[\s:]*', '', l).strip()
                     if not check_header: continue 
                     l = check_header
                 if "공급자" not in l and "회사명" not in l:
