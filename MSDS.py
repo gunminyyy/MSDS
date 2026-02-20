@@ -57,12 +57,12 @@ def get_description_smart(code, code_map):
 def calculate_smart_height_basic(text): 
     if not text: return 19.2
     
-    # [수정] 단순 \n 개수가 아닌, 글자 수 기반 시각적 줄바꿈 계산
+    # 단순 \n 개수가 아닌, 글자 수 기반 시각적 줄바꿈 계산
     lines = str(text).split('\n')
     total_visual_lines = 0
     
-    # 엑셀 D열 기준 1줄당 약 40글자(공백 포함)로 계산
-    char_limit = 40.0
+    # [수정] 엑셀 D열 기준 1줄당 글자 수 제한을 40 -> 45로 완화
+    char_limit = 45.0
     
     for line in lines:
         if len(line) == 0:
