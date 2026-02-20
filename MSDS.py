@@ -62,7 +62,6 @@ def calculate_smart_height_basic(text):
     elif final_lines == 2: return 23.3
     else: return 33.0
 
-# [수정] 영문(E)일 때 마침표(.) 강제 줄바꿈 현상 완벽 해결
 def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
     
@@ -135,7 +134,6 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             safe_write_force(ws, current_row, 4, "")
             safe_write_force(ws, current_row, 6, "")
 
-# [수정] 모드를 인자로 받아 포맷팅 함수에 전달
 def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_key, mode="CFF(K)"):
     limit = end_row - start_row + 1
     for i in range(limit):
@@ -149,7 +147,6 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
                 if cell_data == "nan": cell_data = ""
             safe_write_force(ws, current_row, 2, cell_data, center=False)
             ws.row_dimensions[current_row].hidden = False
-            # [수정] mode 전달
             _, h = format_and_calc_height_sec47(cell_data, mode=mode)
             if h < 24.0: h = 24.0 
             ws.row_dimensions[current_row].height = h
@@ -407,13 +404,11 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
             if mode == "CFF(E)":
-                prev_txt = prev['text'].strip()
+                # [수정] 대문자나 불릿으로 시작하면 강제 줄바꿈 (원본이 한줄이었으면 이 로직을 타지 않음)
                 curr_txt = curr['text'].strip()
+                starts_with_bullet_or_cap = re.match(r"^(\-|•|\*|\d+\.|[A-Z])", curr_txt)
                 
-                ends_with_punctuation = re.search(r'[\.:;!]$', prev_txt)
-                starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.)", curr_txt)
-                
-                if ends_with_punctuation or starts_with_bullet:
+                if starts_with_bullet_or_cap:
                     final_text += "\n" + curr_txt
                 else:
                     final_text += " " + curr_txt
@@ -496,6 +491,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 if not line: continue 
             
             if line.lower() == "mixture": continue
+            if line.lower() == "mixture.": continue
             
             hazard_cls_lines.append(line)
         result["hazard_cls"] = hazard_cls_lines
@@ -520,21 +516,29 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 elif p.startswith("P4"): result["p_stor"].append(code)
                 elif p.startswith("P5"): result["p_disp"].append(code)
 
+        # [수정] CFF(E) 성분 데이터(Section 3) 추출 방식 전면 개편 (findall 활용)
         comp_text = extract_section_smart(all_lines, "3. Composition", "4. FIRST-AID", mode)
         regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
-        regex_conc = re.compile(r'(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)')
-        comp_lines = comp_text.split('\n')
-        for line in comp_lines:
-            cas_m = regex_cas.search(line)
-            conc_m = regex_conc.search(line)
-            if cas_m:
-                c_val = cas_m.group(0)
-                cn_val = ""
-                if conc_m: 
-                    val1 = float(conc_m.group(1))
-                    if val1 <= 100:
-                        cn_val = f"{conc_m.group(1)} ~ {conc_m.group(2)}"
-                result["composition_data"].append((c_val, cn_val))
+        regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
+        
+        cas_list = regex_cas.findall(comp_text)
+        conc_list = []
+        
+        # CAS 번호를 텍스트에서 제거하여 농도 숫자로 오인되는 것 방지
+        comp_text_no_cas = regex_cas.sub(" ", comp_text)
+        for match in regex_conc.finditer(comp_text_no_cas):
+            val1 = float(match.group(1))
+            val2 = float(match.group(2))
+            # EC 번호 등(100 이상)은 제외하고 실제 농도(%)만 수집
+            if val1 <= 100 and val2 <= 100:
+                conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+                
+        # 순서대로 CAS와 농도를 짝지어줌
+        max_len = max(len(cas_list), len(conc_list))
+        for i in range(max_len):
+            c_val = cas_list[i] if i < len(cas_list) else ""
+            cn_val = conc_list[i] if i < len(conc_list) else ""
+            result["composition_data"].append((c_val, cn_val))
 
         data = {}
         data["B125"] = extract_section_smart(all_lines, "4.1 General advice", "4.2 In case of eye contact", mode)
