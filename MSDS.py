@@ -208,16 +208,15 @@ def is_blue_dominant(pil_img):
 def is_square_shaped(width, height):
     if height == 0: return False
     ratio = width / height
-    return 0.8 < ratio < 1.2 # [복원] 예전 코드의 비율 (0.8~1.2)
+    return 0.8 < ratio < 1.2 
 
 def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
-    # [복원] 예전 코드의 로직 적용
     if mode == "HP(K)":
         src_norm = normalize_image_smart(src_img)
-        threshold = 70 # [복원] 예전 코드의 기준점
+        threshold = 70 
     else: 
         src_norm = normalize_image_legacy(src_img)
         threshold = 65
@@ -342,7 +341,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     if not target_lines: return ""
     
     if mode == "CFF(E)":
-        # [수정] CFF(E) Garbage Headers 추가 (요청 사항 반영)
+        # [수정] CFF(E) Garbage Headers 추가
         garbage_heads = [
             "Classification of the substance or mixture", "Classification of the substance or", "mixture",
             "Precautionary statements", "Hazard pictograms", "Signal word", 
@@ -399,13 +398,11 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
             if mode == "CFF(E)":
-                # [수정] CFF(E) 줄바꿈 로직 개선 (기본 Space, 특정 조건 Newline)
-                prev_txt = prev['text'].strip(); curr_txt = curr['text'].strip()
-                # 문장이 끝나거나, 다음 문장이 Bullet/대문자시작일 때 줄바꿈
-                ends_with_period = prev_txt.endswith('.')
-                starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.|[A-Z]\.)", curr_txt)
-                
-                if ends_with_period or starts_with_bullet:
+                # [수정] CFF(E) 줄바꿈 로직 개선 (조건부 Newline)
+                prev_txt = prev['text'].strip()
+                curr_txt = curr['text'].strip()
+                # 이전 줄이 마침표/콜론으로 끝나거나, 다음 줄이 대문자/불릿/숫자로 시작하면 줄바꿈
+                if re.search(r'[:\.]$', prev_txt) or re.match(r'^[-•\*\d+A-Z]', curr_txt):
                     final_text += "\n" + curr_txt
                 else:
                     final_text += " " + curr_txt
@@ -467,7 +464,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}, "sec14": {}, "sec15": {}
     }
     
-    # [수정] Section 9 위치 미리 찾기 (CFF E "Color" 오류 방지)
+    # [수정] Section 9 범위 미리 찾기 (CFF E 오류 방지)
     sec9_lines = []
     start_9 = -1; end_9 = -1
     for i, line in enumerate(all_lines):
@@ -478,13 +475,13 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         sec9_lines = all_lines[start_9:end_9]
 
     if mode == "CFF(E)":
-        # [수정] Section 2.1 ~ 2.2 범위 및 필터링 수정
+        # [수정] Section 2 추출 범위 및 필터링 개선
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
         hazard_cls_lines = []
         for line in hazard_cls_text.split('\n'):
             line = line.strip()
             if not line: continue
-            # [필터링] 2.1 Classification... 및 mixture 제거
+            # 필터링: 2.1 Classification... 및 mixture 문구 제거
             if "2.1 Classification" in line: continue
             if line.lower() == "mixture": continue
             hazard_cls_lines.append(line)
@@ -494,7 +491,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         m_sig = re.search(r"Signal word\s*[:\-\s]*([A-Za-z]+)", full_text, re.IGNORECASE)
         if m_sig: result["signal_word"] = m_sig.group(1).capitalize()
         
-        # [수정] H/P 코드 추출 로직 교체 (CFF(K) 로직 사용)
+        # [수정] CFF(E) H/P 코드 추출: 전체 텍스트 스캔 방식으로 변경 (CFF(K) 로직 사용)
         regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
         all_matches = regex_code.findall(full_text)
         seen = set()
@@ -511,8 +508,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 elif p.startswith("P5"): result["p_disp"].append(code)
 
         comp_text = extract_section_smart(all_lines, "3. Composition", "4. FIRST-AID", mode)
+        # [수정] Section 3 정규식 개선 (하이픈 범위 등 허용)
         regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
-        regex_conc = re.compile(r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)')
+        regex_conc = re.compile(r'(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)')
         comp_lines = comp_text.split('\n')
         for line in comp_lines:
             cas_m = regex_cas.search(line)
@@ -555,12 +553,11 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         s8["B156"] = extract_section_smart(all_lines, "ACGIH regulations", "Biological exposure", mode)
         result["sec8"] = s8
 
-        # [수정] Section 9 추출 시 sec9_lines 사용 (범위 제한)
+        # [수정] Section 9 추출 범위 제한 및 값 정제
         s9 = {}
         s9["B170"] = extract_section_smart(sec9_lines, "Color", "Odor", mode)
         s9["B176"] = extract_section_smart(sec9_lines, "Flash point", "Evaporation rate", mode)
         
-        # [수정] Specific Gravity, Refractive Index 제목 제거
         b183_raw = extract_section_smart(sec9_lines, "Specific gravity", "Partition coefficient", mode)
         s9["B183"] = b183_raw.replace("(20/20℃)", "").replace("(Water=1)", "").strip()
         
@@ -572,9 +569,13 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         s14 = {}
         un_text = extract_section_smart(all_lines, "14.1 UN number", "14.2 Proper", mode)
         s14["UN"] = re.sub(r'\D', '', un_text)
+        
+        # [수정] Section 14 Shipping Name 정제 (괄호 제거 및 제목 제거)
         name_text = extract_section_smart(all_lines, "14.2 Proper", "14.3 Transport", mode)
-        # [수정] 괄호 및 내용 제거
+        name_text = re.sub(r'(?i)proper\s*shipping\s*name', '', name_text)
+        name_text = re.sub(r'(?i)shipping\s*name', '', name_text)
         s14["NAME"] = re.sub(r'\([^)]*\)', '', name_text).strip()
+        
         result["sec14"] = s14
 
         return result
