@@ -58,9 +58,11 @@ def calculate_smart_height_basic(text):
     if not text: return 19.2
     explicit_lines = str(text).count('\n') + 1
     final_lines = max(explicit_lines, 1)
+    
+    # [수정] 행 높이 설정 변경 (1줄: 19.2, 2줄: 26, 3줄 이상: 36)
     if final_lines == 1: return 19.2
-    elif final_lines == 2: return 23.3
-    else: return 33.0
+    elif final_lines == 2: return 26.0
+    else: return 36.0
 
 def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
