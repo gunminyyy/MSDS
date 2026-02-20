@@ -62,11 +62,21 @@ def calculate_smart_height_basic(text):
     elif final_lines == 2: return 23.3
     else: return 33.0
 
-def format_and_calc_height_sec47(text):
+# [수정] 영문(E)일 때 마침표(.) 강제 줄바꿈 현상 완벽 해결
+def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
-    formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
+    
+    if "E" in mode:
+        # 영문일 때는 마침표 뒤에 무조건 줄바꿈(\n)하는 것을 막음.
+        # 대신, 마침표 바로 뒤에 영문자가 붙어있을 경우(예: unattended.If) 띄어쓰기만 1칸 추가함
+        formatted_text = re.sub(r'(?<!\d)\.([A-Za-z])', r'. \1', text)
+    else:
+        # 국문은 기존처럼 마침표 뒤 강제 줄바꿈 유지
+        formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
+        
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
     final_text = "\n".join(lines)
+    
     char_limit_per_line = 45
     total_visual_lines = 0
     for line in lines:
@@ -116,7 +126,6 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             ws.row_dimensions[current_row].hidden = False
             ws.row_dimensions[current_row].height = 26.7
             
-            # [K/E 공통] CAS NO 왼쪽 정렬 (center=False)
             safe_write_force(ws, current_row, 1, chem_name, center=False)
             safe_write_force(ws, current_row, 4, cas_no, center=False) 
             safe_write_force(ws, current_row, 6, concentration if concentration else "", center=True)
@@ -126,7 +135,8 @@ def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
             safe_write_force(ws, current_row, 4, "")
             safe_write_force(ws, current_row, 6, "")
 
-def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_key):
+# [수정] 모드를 인자로 받아 포맷팅 함수에 전달
+def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_key, mode="CFF(K)"):
     limit = end_row - start_row + 1
     for i in range(limit):
         current_row = start_row + i
@@ -139,7 +149,8 @@ def fill_regulatory_section(ws, start_row, end_row, substances, data_map, col_ke
                 if cell_data == "nan": cell_data = ""
             safe_write_force(ws, current_row, 2, cell_data, center=False)
             ws.row_dimensions[current_row].hidden = False
-            _, h = format_and_calc_height_sec47(cell_data)
+            # [수정] mode 전달
+            _, h = format_and_calc_height_sec47(cell_data, mode=mode)
             if h < 24.0: h = 24.0 
             ws.row_dimensions[current_row].height = h
         else:
@@ -341,7 +352,6 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     if not target_lines: return ""
     
     if mode == "CFF(E)":
-        # [수정] CFF(E) Garbage Headers 추가
         garbage_heads = [
             "Classification of the substance or mixture", "Classification of the substance or", "mixture",
             "Precautionary statements", "Hazard pictograms", "Signal word", 
@@ -351,7 +361,6 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             "Personal precautions, protective", "Environmental precautions", "Methods and materials for containment",
             "Precautions for safe handling", "Conditions for safe storage, including",
             "Internal regulations", "ACGIH regulations", "Biological exposure standards",
-            # [추가됨]
             "arising from the", ", protective", "precautions", "and materials for containment", 
             "for safe handling", "for safe storage, including", "conditions for safe storage, including"
         ]
@@ -398,11 +407,13 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
             if mode == "CFF(E)":
-                # [수정] CFF(E) 줄바꿈 로직 개선 (조건부 Newline)
                 prev_txt = prev['text'].strip()
                 curr_txt = curr['text'].strip()
-                # 이전 줄이 마침표/콜론으로 끝나거나, 다음 줄이 대문자/불릿/숫자로 시작하면 줄바꿈
-                if re.search(r'[:\.]$', prev_txt) or re.match(r'^[-•\*\d+A-Z]', curr_txt):
+                
+                ends_with_punctuation = re.search(r'[\.:;!]$', prev_txt)
+                starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.)", curr_txt)
+                
+                if ends_with_punctuation or starts_with_bullet:
                     final_text += "\n" + curr_txt
                 else:
                     final_text += " " + curr_txt
@@ -464,7 +475,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         "composition_data": [], "sec4_to_7": {}, "sec8": {}, "sec9": {}, "sec14": {}, "sec15": {}
     }
     
-    # [수정] Section 9 범위 미리 찾기 (CFF E 오류 방지)
     sec9_lines = []
     start_9 = -1; end_9 = -1
     for i, line in enumerate(all_lines):
@@ -475,15 +485,18 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         sec9_lines = all_lines[start_9:end_9]
 
     if mode == "CFF(E)":
-        # [수정] Section 2 추출 범위 및 필터링 개선
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
         hazard_cls_lines = []
         for line in hazard_cls_text.split('\n'):
             line = line.strip()
             if not line: continue
-            # 필터링: 2.1 Classification... 및 mixture 문구 제거
-            if "2.1 Classification" in line: continue
+            
+            if "2.1 Classification" in line:
+                line = line.replace("2.1 Classification of the substance or", "").replace("mixture", "").strip()
+                if not line: continue 
+            
             if line.lower() == "mixture": continue
+            
             hazard_cls_lines.append(line)
         result["hazard_cls"] = hazard_cls_lines
 
@@ -491,9 +504,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         m_sig = re.search(r"Signal word\s*[:\-\s]*([A-Za-z]+)", full_text, re.IGNORECASE)
         if m_sig: result["signal_word"] = m_sig.group(1).capitalize()
         
-        # [수정] CFF(E) H/P 코드 추출: 전체 텍스트 스캔 방식으로 변경 (CFF(K) 로직 사용)
+        h_search_text = extract_section_smart(all_lines, "2. Hazards", "3. Composition", mode)
         regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
-        all_matches = regex_code.findall(full_text)
+        all_matches = regex_code.findall(h_search_text) 
         seen = set()
         for code_raw in all_matches:
             code = code_raw.replace(" ", "").upper()
@@ -508,7 +521,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 elif p.startswith("P5"): result["p_disp"].append(code)
 
         comp_text = extract_section_smart(all_lines, "3. Composition", "4. FIRST-AID", mode)
-        # [수정] Section 3 정규식 개선 (하이픈 범위 등 허용)
         regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
         regex_conc = re.compile(r'(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)')
         comp_lines = comp_text.split('\n')
@@ -518,7 +530,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             if cas_m:
                 c_val = cas_m.group(0)
                 cn_val = ""
-                if conc_m: cn_val = f"{conc_m.group(1)} ~ {conc_m.group(2)}"
+                if conc_m: 
+                    val1 = float(conc_m.group(1))
+                    if val1 <= 100:
+                        cn_val = f"{conc_m.group(1)} ~ {conc_m.group(2)}"
                 result["composition_data"].append((c_val, cn_val))
 
         data = {}
@@ -553,7 +568,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         s8["B156"] = extract_section_smart(all_lines, "ACGIH regulations", "Biological exposure", mode)
         result["sec8"] = s8
 
-        # [수정] Section 9 추출 범위 제한 및 값 정제
         s9 = {}
         s9["B170"] = extract_section_smart(sec9_lines, "Color", "Odor", mode)
         s9["B176"] = extract_section_smart(sec9_lines, "Flash point", "Evaporation rate", mode)
@@ -570,7 +584,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         un_text = extract_section_smart(all_lines, "14.1 UN number", "14.2 Proper", mode)
         s14["UN"] = re.sub(r'\D', '', un_text)
         
-        # [수정] Section 14 Shipping Name 정제 (괄호 제거 및 제목 제거)
         name_text = extract_section_smart(all_lines, "14.2 Proper", "14.3 Transport", mode)
         name_text = re.sub(r'(?i)proper\s*shipping\s*name', '', name_text)
         name_text = re.sub(r'(?i)shipping\s*name', '', name_text)
@@ -927,7 +940,6 @@ with col_center:
 
                         if option == "CFF(E)":
                             safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
-                            # [수정] B9 왼쪽 정렬
                             safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
                             
                             if parsed_data["hazard_cls"]:
@@ -975,7 +987,7 @@ with col_center:
                                         suffix = "0.01" if addr == "B183" else "0.005"
                                         val = f"{num.group(1)} ± {suffix}"
                                 
-                                formatted, h = format_and_calc_height_sec47(val)
+                                formatted, h = format_and_calc_height_sec47(val, mode=option)
                                 r_idx = int(re.search(r'\d+', addr).group())
                                 safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
                                 dest_ws.row_dimensions[r_idx].height = h
@@ -995,18 +1007,17 @@ with col_center:
                                     safe_write_force(dest_ws, 157, 2, "\n".join(lines[1:]), center=False)
                                     dest_ws.row_dimensions[157].hidden = False
 
-                            fill_regulatory_section(dest_ws, 202, 240, active_substances, eng_data_map, 'F')
-                            fill_regulatory_section(dest_ws, 242, 279, active_substances, eng_data_map, 'G')
-                            fill_regulatory_section(dest_ws, 281, 315, active_substances, eng_data_map, 'H')
-                            fill_regulatory_section(dest_ws, 324, 358, active_substances, eng_data_map, 'P')
-                            fill_regulatory_section(dest_ws, 360, 395, active_substances, eng_data_map, 'Q')
-                            fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T')
-                            fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U')
-                            fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V')
+                            fill_regulatory_section(dest_ws, 202, 240, active_substances, eng_data_map, 'F', mode=option)
+                            fill_regulatory_section(dest_ws, 242, 279, active_substances, eng_data_map, 'G', mode=option)
+                            fill_regulatory_section(dest_ws, 281, 315, active_substances, eng_data_map, 'H', mode=option)
+                            fill_regulatory_section(dest_ws, 324, 358, active_substances, eng_data_map, 'P', mode=option)
+                            fill_regulatory_section(dest_ws, 360, 395, active_substances, eng_data_map, 'Q', mode=option)
+                            fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T', mode=option)
+                            fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
+                            fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
                             s14 = parsed_data["sec14"]
                             safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
-                            # [수정] 괄호 제거된 NAME 사용
                             safe_write_force(dest_ws, 532, 2, s14["NAME"], center=False)
 
                             today_eng = datetime.now().strftime("%d. %b. %Y")
@@ -1047,7 +1058,7 @@ with col_center:
 
                             sec_data = parsed_data["sec4_to_7"]
                             for cell_addr, raw_text in sec_data.items():
-                                formatted_txt, row_h = format_and_calc_height_sec47(raw_text)
+                                formatted_txt, row_h = format_and_calc_height_sec47(raw_text, mode=option)
                                 try:
                                     col_str = re.match(r"([A-Z]+)", cell_addr).group(1)
                                     row_num = int(re.search(r"(\d+)", cell_addr).group(1))
@@ -1097,14 +1108,14 @@ with col_center:
                             r_match = re.search(r'([\d\.]+)', refract)
                             safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
-                            fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F')
-                            fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G')
-                            fill_regulatory_section(dest_ws, 269, 300, active_substances, kor_data_map, 'H')
-                            fill_regulatory_section(dest_ws, 316, 348, active_substances, kor_data_map, 'P')
-                            fill_regulatory_section(dest_ws, 353, 385, active_substances, kor_data_map, 'P')
-                            fill_regulatory_section(dest_ws, 392, 426, active_substances, kor_data_map, 'T')
-                            fill_regulatory_section(dest_ws, 428, 460, active_substances, kor_data_map, 'U')
-                            fill_regulatory_section(dest_ws, 465, 497, active_substances, kor_data_map, 'V')
+                            fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F', mode=option)
+                            fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G', mode=option)
+                            fill_regulatory_section(dest_ws, 269, 300, active_substances, kor_data_map, 'H', mode=option)
+                            fill_regulatory_section(dest_ws, 316, 348, active_substances, kor_data_map, 'P', mode=option)
+                            fill_regulatory_section(dest_ws, 353, 385, active_substances, kor_data_map, 'P', mode=option)
+                            fill_regulatory_section(dest_ws, 392, 426, active_substances, kor_data_map, 'T', mode=option)
+                            fill_regulatory_section(dest_ws, 428, 460, active_substances, kor_data_map, 'U', mode=option)
+                            fill_regulatory_section(dest_ws, 465, 497, active_substances, kor_data_map, 'V', mode=option)
 
                             for r in range(261, 268): dest_ws.row_dimensions[r].hidden = True
                             for r in range(349, 352): dest_ws.row_dimensions[r].hidden = True
