@@ -54,14 +54,12 @@ def get_description_smart(code, code_map):
         if found_texts: return " ".join(found_texts)
     return ""
 
-# [수정] 모드(국/영문)에 따라 1줄당 글자수 다르게 적용 및 4줄 높이 추가
 def calculate_smart_height_basic(text, mode="CFF(K)"): 
     if not text: return 19.2
     
     lines = str(text).split('\n')
     total_visual_lines = 0
     
-    # 영문은 글자 폭이 좁아 1줄에 약 70자 진입 가능, 국문은 45자 유지
     if "E" in mode:
         char_limit = 70.0
     else:
@@ -73,7 +71,6 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
         else:
             total_visual_lines += math.ceil(len(line) / char_limit)
             
-    # 계산된 시각적 줄 수에 따른 행 높이 반환
     if total_visual_lines <= 1: 
         return 19.2
     elif total_visual_lines == 2: 
@@ -81,17 +78,14 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     elif total_visual_lines == 3: 
         return 36.0
     else: 
-        return 45.0 # 4줄 이상일 경우 45.0 적용
+        return 45.0
 
 def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
     
     if "E" in mode:
-        # 영문일 때는 마침표 뒤에 무조건 줄바꿈(\n)하는 것을 막음.
-        # 대신, 마침표 바로 뒤에 영문자가 붙어있을 경우(예: unattended.If) 띄어쓰기만 1칸 추가함
         formatted_text = re.sub(r'(?<!\d)\.([A-Za-z])', r'. \1', text)
     else:
-        # 국문은 기존처럼 마침표 뒤 강제 줄바꿈 유지
         formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
         
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
@@ -110,7 +104,6 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
     height = (total_visual_lines * 10) + 10
     return final_text, height
 
-# [수정] 모드 파라미터 전달받도록 수정
 def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
     unique_codes = []; seen = set()
     for c in codes:
@@ -123,10 +116,7 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
             code = unique_codes[i]
             desc = get_description_smart(code, code_map)
             ws.row_dimensions[current_row].hidden = False
-            
-            # [수정] 높이 계산 시 mode 전달
             final_height = calculate_smart_height_basic(desc, mode)
-            
             ws.row_dimensions[current_row].height = final_height
             safe_write_force(ws, current_row, 2, code, center=False)
             safe_write_force(ws, current_row, 4, desc, center=False)
@@ -247,7 +237,7 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     best_score = float('inf')
     best_name = None
     
-    if mode == "HP(K)":
+    if mode in ["HP(K)", "HP(E)"]:
         src_norm = normalize_image_smart(src_img)
         threshold = 70 
     else: 
@@ -257,7 +247,7 @@ def find_best_match_name(src_img, ref_images, mode="CFF(K)"):
     try:
         src_arr = np.array(src_norm, dtype='int16')
         for name, ref_img in ref_images.items():
-            if mode == "HP(K)": 
+            if mode in ["HP(K)", "HP(E)"]: 
                 ref_norm = normalize_image_smart(ref_img)
             else: 
                 ref_norm = normalize_image_legacy(ref_img)
@@ -373,7 +363,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     target_lines.extend(target_lines_raw[1:])
     if not target_lines: return ""
     
-    if mode == "CFF(E)":
+    if mode in ["CFF(E)", "HP(E)"]:
         garbage_heads = [
             "Classification of the substance or mixture", "Classification of the substance or", "mixture",
             "Precautionary statements", "Hazard pictograms", "Signal word", 
@@ -397,7 +387,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
-        if "HP" in mode: txt = txt.lstrip("-").strip()
+        if mode in ["HP(K)", "HP(E)"]: txt = re.sub(r'^\s*-\s*', '', txt).strip()
         
         for _ in range(3):
             changed = False
@@ -416,7 +406,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             if not changed: break
         
         if txt:
-            if "HP" in mode: txt = txt.lstrip("-").strip()
+            if mode in ["HP(K)", "HP(E)"]: txt = re.sub(r'^\s*-\s*', '', txt).strip()
             line['text'] = txt
             cleaned_lines.append(line)
     
@@ -428,11 +418,14 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
         for i in range(1, len(cleaned_lines)):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
-            if mode == "CFF(E)":
+            if mode in ["CFF(E)", "HP(E)"]:
+                prev_txt = prev['text'].strip()
                 curr_txt = curr['text'].strip()
-                starts_with_bullet_or_cap = re.match(r"^(\-|•|\*|\d+\.|[A-Z])", curr_txt)
                 
-                if starts_with_bullet_or_cap:
+                ends_with_punctuation = re.search(r'[\.:;!]$', prev_txt)
+                starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.|[A-Z])", curr_txt)
+                
+                if ends_with_punctuation or starts_with_bullet:
                     final_text += "\n" + curr_txt
                 else:
                     final_text += " " + curr_txt
@@ -502,6 +495,115 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     if start_9 != -1:
         if end_9 == -1: end_9 = len(all_lines)
         sec9_lines = all_lines[start_9:end_9]
+
+    if mode == "HP(E)":
+        b19_raw = extract_section_smart(all_lines, "A. GHS Classification", "B. GHS label elements", mode)
+        b19_lines = []
+        cur_str = ""
+        for l in b19_raw.split('\n'):
+            l = l.strip()
+            if l.startswith('-'):
+                if cur_str: b19_lines.append(cur_str)
+                cur_str = l[1:].strip()
+            else:
+                cur_str += " " + l if cur_str else l
+        if cur_str: b19_lines.append(cur_str)
+        result["hazard_cls"] = [re.sub(r'^\s*-\s*', '', line).strip() for line in b19_lines if line.strip()]
+
+        sig_raw = extract_section_smart(all_lines, "○ Signal words", "○ Hazard statements", mode)
+        result["signal_word"] = sig_raw.replace("-", "").strip()
+
+        h_search_text = extract_section_smart(all_lines, "○ Hazard statements", "○ Precautionary statements", mode)
+        regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+        result["h_codes"] = list(set(regex_code.findall(h_search_text)))
+
+        result["p_prev"] = list(set(regex_code.findall(extract_section_smart(all_lines, "1) Prevention", "2) Response", mode))))
+        result["p_resp"] = list(set(regex_code.findall(extract_section_smart(all_lines, "2) Response", "3) Storage", mode))))
+        result["p_stor"] = list(set(regex_code.findall(extract_section_smart(all_lines, "3) Storage", "4) Disposal", mode))))
+        result["p_disp"] = list(set(regex_code.findall(extract_section_smart(all_lines, "4) Disposal", "C. Other hazards", mode))))
+
+        comp_text = extract_section_smart(all_lines, "3. COMPOSITION", "4. FIRST AID MEASURES", mode)
+        regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
+        comp_lines = comp_text.split('\n')
+        for line in comp_lines:
+            cas_found = regex_cas_strict.findall(line)
+            if cas_found:
+                c_val = cas_found[0].replace(" ", "")
+                txt_no_cas = line.replace(cas_found[0], " " * len(cas_found[0]))
+                m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
+                cn_val = ""
+                if m_range:
+                    s, e = m_range.group(1), m_range.group(2)
+                    if s == "1": s = "0"
+                    cn_val = f"{s} ~ {e}"
+                else:
+                    m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
+                    if m_single:
+                        try:
+                            if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
+                        except: pass
+                if c_val or cn_val:
+                    if "." not in cn_val:
+                        result["composition_data"].append((c_val, cn_val))
+
+        data = {}
+        data["B126"] = extract_section_smart(all_lines, "A. Eye contact", "B. Skin contact", mode)
+        data["B127"] = extract_section_smart(all_lines, "B. Skin contact", "C. Inhalation contact", mode)
+        data["B128"] = extract_section_smart(all_lines, "C. Inhalation contact", "D. Ingestion contact", mode)
+        data["B129"] = extract_section_smart(all_lines, "D. Ingestion contact", "E. Delayed and", mode)
+
+        data["B132"] = extract_section_smart(all_lines, "A. Suitable (Unsuitable) extinguishing media", "B. Specific hazards", mode)
+        data["B134"] = extract_section_smart(all_lines, "B. Specific hazards arising from the chemical", "C. Special protective", mode)
+        data["B136"] = extract_section_smart(all_lines, "C. Special protective actions for firefighters", "6. ACCIDENTAL", mode)
+
+        data["B140"] = extract_section_smart(all_lines, "A. Personal precautions, protective", "B. Environmental", mode)
+        data["B142"] = extract_section_smart(all_lines, "B. Environmental precautions", "C. Methods and materials", mode)
+        data["B144"] = extract_section_smart(all_lines, "C. Methods and materials for containment", "7. HANDLING", mode)
+
+        data["B148"] = extract_section_smart(all_lines, "A. Precautions for safe handling", "B. Conditions for safe", mode)
+        data["B150"] = extract_section_smart(all_lines, "B. Conditions for safe storage, including", "8. EXPOSURE", mode)
+        
+        result["sec4_to_7"] = data
+
+        s8 = {}
+        s8_raw = extract_section_smart(all_lines, "○ ACGIH TLV", "○ OSHA PEL", mode)
+        if "-  Not applicable" in s8_raw or "- Not applicable" in s8_raw:
+            s8["B154"] = "no data available"
+            s8["B156"] = ""
+        else:
+            s8["B154"] = s8_raw
+            s8["B156"] = ""
+        result["sec8"] = s8
+
+        s9 = {}
+        color_raw = extract_section_smart(sec9_lines, "- Color", "B. Odor", mode).replace("-", "").strip()
+        if color_raw:
+            s9["B170"] = color_raw[0].upper() + color_raw[1:].lower()
+        else:
+            s9["B170"] = ""
+        s9["B176"] = extract_section_smart(sec9_lines, "G. Flash point", "H. Evaporation rate", mode).strip()
+        
+        b183_raw = extract_section_smart(sec9_lines, "N. Specific gravity", "O. Partition coefficient", mode)
+        g_match = re.search(r'([\d\.]+)', b183_raw)
+        if g_match:
+            s9["B183"] = f"{g_match.group(1)} ± 0.010"
+        else:
+            s9["B183"] = ""
+        s9["B189"] = "± 0.005"
+        result["sec9"] = s9
+
+        s14 = {}
+        un_text = extract_section_smart(all_lines, "A. UN No.", "B. Proper shipping name", mode)
+        s14["UN"] = re.sub(r'\D', '', un_text.replace("-", ""))
+        
+        name_text = extract_section_smart(all_lines, "B. Proper shipping name", "C. Hazard Class", mode).replace("-", "").strip()
+        name_text = re.sub(r'(?i)proper\s*shipping\s*name', '', name_text)
+        name_text = re.sub(r'(?i)shipping\s*name', '', name_text)
+        s14["NAME"] = re.sub(r'\([^)]*\)', '', name_text).strip()
+        result["sec14"] = s14
+
+        result["sec15"] = {"DANGER": ""}
+        return result
 
     if mode == "CFF(E)":
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
@@ -962,7 +1064,124 @@ with col_center:
                                 if isinstance(cell, MergedCell): continue
                                 if cell.column == 2 and cell.data_type == 'f': cell.value = ""
 
-                        if option == "CFF(E)":
+                        if option == "HP(E)":
+                            safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
+                            safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
+                            
+                            if parsed_data["hazard_cls"]:
+                                clean_cls = "\n".join(parsed_data["hazard_cls"])
+                                safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
+                            
+                            if parsed_data["signal_word"]:
+                                safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
+
+                            fill_fixed_range(dest_ws, 24, 36, parsed_data["h_codes"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map, mode=option)
+                            
+                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
+                            
+                            active_substances = []
+                            for c_data in parsed_data["composition_data"]:
+                                cas = c_data[0].replace(" ", "").strip()
+                                if cas in cas_name_map:
+                                    name = cas_name_map[cas]
+                                    if name: active_substances.append(name)
+                                    
+                            sd = parsed_data["sec4_to_7"]
+                            cell_map_e = {
+                                "B126": sd.get("B126",""), 
+                                "B127": sd.get("B127",""), "B128": sd.get("B128",""),
+                                "B129": sd.get("B129",""), "B132": sd.get("B132",""),
+                                "B134": sd.get("B134",""), "B136": sd.get("B136",""),
+                                "B140": sd.get("B140",""), "B142": sd.get("B142",""),
+                                "B144": sd.get("B144",""), "B148": sd.get("B148",""),
+                                "B150": sd.get("B150",""),
+                                "B170": parsed_data["sec9"].get("B170",""),
+                                "B176": parsed_data["sec9"].get("B176",""),
+                                "B183": parsed_data["sec9"].get("B183",""),
+                                "B189": parsed_data["sec9"].get("B189","")
+                            }
+                            
+                            for addr, val in cell_map_e.items():
+                                if not val: continue
+                                formatted, h = format_and_calc_height_sec47(val, mode=option)
+                                r_idx = int(re.search(r'\d+', addr).group())
+                                safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
+                                dest_ws.row_dimensions[r_idx].height = h
+
+                            s8 = parsed_data["sec8"]
+                            if s8["B154"]:
+                                lines = s8["B154"].split('\n')
+                                if "no data available" in lines[0].lower():
+                                    safe_write_force(dest_ws, 154, 2, "no data available", center=False)
+                                else:
+                                    safe_write_force(dest_ws, 154, 2, lines[0], center=False)
+                                    if len(lines) > 1:
+                                        safe_write_force(dest_ws, 155, 2, "\n".join(lines[1:]), center=False)
+                                        dest_ws.row_dimensions[155].hidden = False
+                            
+                            fill_regulatory_section(dest_ws, 202, 240, active_substances, eng_data_map, 'F', mode=option)
+                            fill_regulatory_section(dest_ws, 242, 279, active_substances, eng_data_map, 'G', mode=option)
+                            fill_regulatory_section(dest_ws, 281, 315, active_substances, eng_data_map, 'H', mode=option)
+                            fill_regulatory_section(dest_ws, 324, 358, active_substances, eng_data_map, 'P', mode=option)
+                            fill_regulatory_section(dest_ws, 360, 395, active_substances, eng_data_map, 'Q', mode=option)
+                            fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T', mode=option)
+                            fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
+                            fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
+
+                            s14 = parsed_data["sec14"]
+                            safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
+                            safe_write_force(dest_ws, 532, 2, s14["NAME"], center=False)
+
+                            today_eng = datetime.now().strftime("%d. %b. %Y").upper()
+                            safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
+
+                            collected_pil_images = []
+                            page = doc[0]
+                            image_list = doc.get_page_images(0)
+                            
+                            for img_info in image_list:
+                                xref = img_info[0]
+                                try:
+                                    base_image = doc.extract_image(xref)
+                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                    
+                                    if is_blue_dominant(pil_img): continue
+                                    w, h = pil_img.size
+                                    if not is_square_shaped(w, h): continue
+
+                                    if loaded_refs:
+                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode="HP(K)")
+                                        if matched_name:
+                                            clean_img = loaded_refs[matched_name]
+                                            collected_pil_images.append((extract_number(matched_name), clean_img))
+                                except: continue
+                            
+                            unique_images = {}
+                            for key, img in collected_pil_images:
+                                if key not in unique_images: unique_images[key] = img
+                            
+                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
+
+                            if final_sorted_imgs:
+                                unit_size = 67; icon_size = 60
+                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                                total_width = unit_size * len(final_sorted_imgs)
+                                total_height = unit_size
+                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                                for idx, p_img in enumerate(final_sorted_imgs):
+                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                
+                                img_byte_arr = io.BytesIO()
+                                merged_img.save(img_byte_arr, format='PNG')
+                                img_byte_arr.seek(0)
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22')
+
+                        elif option == "CFF(E)":
                             safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
                             safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
                             
@@ -1161,49 +1380,50 @@ with col_center:
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
                         # [HP(K) 이미지 복원: 과거 코드 로직 적용]
-                        collected_pil_images = []
-                        page = doc[0]
-                        image_list = doc.get_page_images(0)
-                        
-                        for img_info in image_list:
-                            xref = img_info[0]
-                            try:
-                                base_image = doc.extract_image(xref)
-                                pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                
-                                if option == "HP(K)":
-                                    if is_blue_dominant(pil_img): continue
-                                    w, h = pil_img.size
-                                    if not is_square_shaped(w, h): continue
-
-                                if loaded_refs:
-                                    matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
-                                    if matched_name:
-                                        clean_img = loaded_refs[matched_name]
-                                        collected_pil_images.append((extract_number(matched_name), clean_img))
-                            except: continue
-                        
-                        unique_images = {}
-                        for key, img in collected_pil_images:
-                            if key not in unique_images: unique_images[key] = img
-                        
-                        final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
-
-                        if final_sorted_imgs:
-                            unit_size = 67; icon_size = 60
-                            padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                            total_width = unit_size * len(final_sorted_imgs)
-                            total_height = unit_size
-                            merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                            for idx, p_img in enumerate(final_sorted_imgs):
-                                p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                        if option in ["CFF(K)", "HP(K)"]:
+                            collected_pil_images = []
+                            page = doc[0]
+                            image_list = doc.get_page_images(0)
                             
-                            img_byte_arr = io.BytesIO()
-                            merged_img.save(img_byte_arr, format='PNG')
-                            img_byte_arr.seek(0)
-                            # CFF(E)는 B22, 나머지는 B23
-                            dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+                            for img_info in image_list:
+                                xref = img_info[0]
+                                try:
+                                    base_image = doc.extract_image(xref)
+                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                    
+                                    if option == "HP(K)":
+                                        if is_blue_dominant(pil_img): continue
+                                        w, h = pil_img.size
+                                        if not is_square_shaped(w, h): continue
+
+                                    if loaded_refs:
+                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                        if matched_name:
+                                            clean_img = loaded_refs[matched_name]
+                                            collected_pil_images.append((extract_number(matched_name), clean_img))
+                                except: continue
+                            
+                            unique_images = {}
+                            for key, img in collected_pil_images:
+                                if key not in unique_images: unique_images[key] = img
+                            
+                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
+
+                            if final_sorted_imgs:
+                                unit_size = 67; icon_size = 60
+                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                                total_width = unit_size * len(final_sorted_imgs)
+                                total_height = unit_size
+                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                                for idx, p_img in enumerate(final_sorted_imgs):
+                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                
+                                img_byte_arr = io.BytesIO()
+                                merged_img.save(img_byte_arr, format='PNG')
+                                img_byte_arr.seek(0)
+                                # CFF(E)는 B22, 나머지는 B23
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
                         output = io.BytesIO()
