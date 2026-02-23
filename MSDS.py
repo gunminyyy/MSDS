@@ -574,6 +574,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                     m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_after_cas)
                     if m_range:
                         s, e = m_range.group(1), m_range.group(2)
+                        # 소수점 제외 조건 제거: HP(E)도 소수점 허용
                         if float(s) <= 100 and float(e) <= 100:
                             if s == "1": s = "0"
                             cn_val = f"{s} ~ {e}"
@@ -877,8 +878,8 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     in_comp = False
     for line in all_lines:
         txt = line['text']
-        if "3." in txt and ("성분" in txt or "Composition" in txt or "COMPOSITION" in txt): in_comp=True; continue
-        if "4." in txt and ("응급" in txt or "First" in txt or "FIRST" in txt): in_comp=False; break
+        if "3." in txt and ("성분" in txt or "Composition" in txt): in_comp=True; continue
+        if "4." in txt and ("응급" in txt or "First" in txt): in_comp=False; break
         if in_comp:
             if re.search(r'^\d+\.\d+', txt): continue 
             
@@ -1033,18 +1034,23 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
 
     with col2:
         template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
-    
-    st.markdown("---")
-    st.markdown("💡 **(선택) 영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
-    col3, col4 = st.columns(2)
-    with col3:
-        kor_excel_file = st.file_uploader("3. 국문 엑셀 파일", type="xlsx")
-    with col4:
-        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~60, 물질 61~103행)"])
 
 product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 st.write("") 
+
+# [추가] HP(E), CFF(E)일 때만 국문 엑셀 업로드 UI 표시
+kor_excel_file = None
+kor_form_version = "신버전 (코드 B25~, 물질 80~122행)"
+
+if option in ["CFF(E)", "HP(E)"]:
+    st.markdown("---")
+    st.markdown("💡 **(선택) 영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
+    c3, c4 = st.columns(2)
+    with c3:
+        kor_excel_file = st.file_uploader("3. 국문 엑셀 파일 (선택)", type="xlsx")
+    with c4:
+        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~60, 물질 61~103행)"])
 
 col_left, col_center, col_right = st.columns([4, 2, 4])
 
@@ -1331,7 +1337,7 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22')
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
 
                         elif option == "CFF(E)":
                             dest_ws['A50'].alignment = ALIGN_LEFT
@@ -1565,11 +1571,15 @@ with col_center:
                             
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
-                            safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
+
+                            s15 = parsed_data["sec15"]
+                            if option == "CFF(K)":
+                                safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
 
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
+                        # [HP(K) 이미지 복원: 과거 코드 로직 적용]
                         if option in ["CFF(K)", "HP(K)"]:
                             collected_pil_images = []
                             page = doc[0]
@@ -1612,7 +1622,8 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B23') 
+                                # CFF(E)는 B22, 나머지는 B23
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
                         output = io.BytesIO()
