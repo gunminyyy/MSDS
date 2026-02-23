@@ -266,6 +266,18 @@ def extract_number(filename):
     nums = re.findall(r'\d+', filename)
     return int(nums[0]) if nums else 999
 
+def extract_codes_ordered(text):
+    regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+    matches = regex_code.findall(text)
+    res = []
+    seen = set()
+    for c_raw in matches:
+        c = c_raw.replace(" ", "").upper()
+        if c not in seen:
+            seen.add(c)
+            res.append(c)
+    return res
+
 # --------------------------------------------------------------------------
 # [3. 파서 함수]
 # --------------------------------------------------------------------------
@@ -363,7 +375,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     target_lines.extend(target_lines_raw[1:])
     if not target_lines: return ""
     
-    if mode in ["CFF(E)", "HP(E)"]:
+    if mode == "CFF(E)":
         garbage_heads = [
             "Classification of the substance or mixture", "Classification of the substance or", "mixture",
             "Precautionary statements", "Hazard pictograms", "Signal word", 
@@ -377,6 +389,21 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             "for safe handling", "for safe storage, including", "conditions for safe storage, including"
         ]
         sensitive_garbage_regex = []
+    elif mode == "HP(E)":
+        garbage_heads = [
+            "Classification of the substance or mixture", "Classification of the substance or", "mixture",
+            "Precautionary statements", "Hazard pictograms", "Signal word", 
+            "Hazard statements", "Response", "Storage", "Disposal", "Other hazards",
+            "General advice", "In case of eye contact", "In case of skin contact", "If inhaled", "If swallowed",
+            "Special note for doctors", "Extinguishing media", "Special hazards arising from the", "Advice for firefighters",
+            "Personal precautions, protective", "Environmental precautions", "Methods and materials for containment",
+            "Precautions for safe handling", "Conditions for safe storage, including",
+            "Internal regulations", "ACGIH regulations", "Biological exposure standards",
+            "arising from the", ", protective", "precautions", "and materials for containment", 
+            "for safe handling", "for safe storage, including", "conditions for safe storage, including",
+            "equipment and emergency procedures", "and cleaning up", "any incompatibilities"
+        ]
+        sensitive_garbage_regex = []
     elif mode == "HP(K)":
         garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 방법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제", "- 색", "(및 부적절한) 소화제", "특정 유해성", "보호하기 위해 필요한 조치 사항 및 보호구", "저장 방법"]
         sensitive_garbage_regex = [r"^시\s+", r"^또는\s+", r"^의\s+"]
@@ -387,7 +414,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
     cleaned_lines = []
     for line in target_lines:
         txt = line['text'].strip()
-        if mode in ["HP(K)", "HP(E)"]: txt = re.sub(r'^\s*-\s*', '', txt).strip()
+        if mode == "HP(K)": txt = re.sub(r'^\s*-\s*', '', txt).strip()
         
         for _ in range(3):
             changed = False
@@ -406,7 +433,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             if not changed: break
         
         if txt:
-            if mode in ["HP(K)", "HP(E)"]: txt = re.sub(r'^\s*-\s*', '', txt).strip()
+            if mode == "HP(K)": txt = re.sub(r'^\s*-\s*', '', txt).strip()
             line['text'] = txt
             cleaned_lines.append(line)
     
@@ -418,14 +445,22 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
         for i in range(1, len(cleaned_lines)):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
-            if mode in ["CFF(E)", "HP(E)"]:
+            if mode == "CFF(E)":
                 prev_txt = prev['text'].strip()
                 curr_txt = curr['text'].strip()
                 
                 ends_with_punctuation = re.search(r'[\.:;!]$', prev_txt)
-                starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.|[A-Z])", curr_txt)
+                starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.)", curr_txt)
+                starts_with_cap = re.match(r"^[A-Z]", curr_txt)
                 
-                if ends_with_punctuation or starts_with_bullet:
+                if starts_with_bullet or (starts_with_cap and ends_with_punctuation):
+                    final_text += "\n" + curr_txt
+                else:
+                    final_text += " " + curr_txt
+            # [수정] HP(E) 전용 줄바꿈 로직: 하이픈/불릿으로 시작하면 줄바꿈, 나머지는 이어붙임
+            elif mode == "HP(E)":
+                curr_txt = curr['text'].strip()
+                if curr_txt.startswith("-") or curr_txt.startswith("•"):
                     final_text += "\n" + curr_txt
                 else:
                     final_text += " " + curr_txt
@@ -498,108 +533,92 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
     if mode == "HP(E)":
         b19_raw = extract_section_smart(all_lines, "A. GHS Classification", "B. GHS label elements", mode)
-        b19_lines = []
-        cur_str = ""
-        for l in b19_raw.split('\n'):
-            l = l.strip()
-            if l.startswith('-'):
-                if cur_str: b19_lines.append(cur_str)
-                cur_str = l[1:].strip()
-            else:
-                cur_str += " " + l if cur_str else l
-        if cur_str: b19_lines.append(cur_str)
-        result["hazard_cls"] = [re.sub(r'^\s*-\s*', '', line).strip() for line in b19_lines if line.strip()]
+        b19_clean = re.sub(r'(?m)^\s*-\s*', '', b19_raw).strip()
+        result["hazard_cls"] = [l.strip() for l in b19_clean.split('\n') if l.strip()]
 
-        sig_raw = extract_section_smart(all_lines, "○ Signal words", "○ Hazard statements", mode)
-        result["signal_word"] = sig_raw.replace("-", "").strip()
+        sig_raw = extract_section_smart(all_lines, "Signal word", "Hazard statement", mode)
+        result["signal_word"] = re.sub(r'^[\-\s○]+', '', sig_raw).strip()
 
-        h_search_text = extract_section_smart(all_lines, "○ Hazard statements", "○ Precautionary statements", mode)
-        regex_code = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
-        result["h_codes"] = list(set(regex_code.findall(h_search_text)))
+        h_search_text = extract_section_smart(all_lines, "Hazard statement", "Precautionary statement", mode)
+        result["h_codes"] = extract_codes_ordered(h_search_text)
 
-        result["p_prev"] = list(set(regex_code.findall(extract_section_smart(all_lines, "1) Prevention", "2) Response", mode))))
-        result["p_resp"] = list(set(regex_code.findall(extract_section_smart(all_lines, "2) Response", "3) Storage", mode))))
-        result["p_stor"] = list(set(regex_code.findall(extract_section_smart(all_lines, "3) Storage", "4) Disposal", mode))))
-        result["p_disp"] = list(set(regex_code.findall(extract_section_smart(all_lines, "4) Disposal", "C. Other hazards", mode))))
+        result["p_prev"] = extract_codes_ordered(extract_section_smart(all_lines, "1) Prevention", "2) Response", mode))
+        result["p_resp"] = extract_codes_ordered(extract_section_smart(all_lines, "2) Response", "3) Storage", mode))
+        result["p_stor"] = extract_codes_ordered(extract_section_smart(all_lines, "3) Storage", "4) Disposal", mode))
+        result["p_disp"] = extract_codes_ordered(extract_section_smart(all_lines, "4) Disposal", "C. Other hazards", mode))
 
-        comp_text = extract_section_smart(all_lines, "3. COMPOSITION", "4. FIRST AID MEASURES", mode)
-        regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
-        comp_lines = comp_text.split('\n')
-        for line in comp_lines:
-            cas_found = regex_cas_strict.findall(line)
-            if cas_found:
-                c_val = cas_found[0].replace(" ", "")
-                txt_no_cas = line.replace(cas_found[0], " " * len(cas_found[0]))
-                m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
-                cn_val = ""
-                if m_range:
-                    s, e = m_range.group(1), m_range.group(2)
-                    if s == "1": s = "0"
-                    cn_val = f"{s} ~ {e}"
-                else:
-                    m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
-                    if m_single:
-                        try:
-                            if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
-                        except: pass
-                if c_val or cn_val:
-                    if "." not in cn_val:
-                        result["composition_data"].append((c_val, cn_val))
+        comp_text = extract_section_smart(all_lines, "3. COMPOSITION", "4. FIRST AID", mode)
+        regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
+        regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
+        
+        cas_list = regex_cas.findall(comp_text)
+        conc_list = []
+        comp_text_no_cas = regex_cas.sub(" ", comp_text)
+        for match in regex_conc.finditer(comp_text_no_cas):
+            v1_s, v2_s = match.group(1), match.group(2)
+            if "." in v1_s or "." in v2_s: continue
+            if float(v1_s) <= 100 and float(v2_s) <= 100:
+                if v1_s == "1": v1_s = "0"
+                conc_list.append(f"{v1_s} ~ {v2_s}")
+                
+        for i in range(max(len(cas_list), len(conc_list))):
+            c = cas_list[i] if i < len(cas_list) else ""
+            cn = conc_list[i] if i < len(conc_list) else ""
+            if c or cn: result["composition_data"].append((c, cn))
 
         data = {}
-        data["B126"] = extract_section_smart(all_lines, "A. Eye contact", "B. Skin contact", mode)
-        data["B127"] = extract_section_smart(all_lines, "B. Skin contact", "C. Inhalation contact", mode)
-        data["B128"] = extract_section_smart(all_lines, "C. Inhalation contact", "D. Ingestion contact", mode)
-        data["B129"] = extract_section_smart(all_lines, "D. Ingestion contact", "E. Delayed and", mode)
+        data["B126"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Eye contact", "Skin contact", mode)).strip()
+        data["B127"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Skin contact", "Inhalation contact", mode)).strip()
+        data["B128"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Inhalation contact", "Ingestion contact", mode)).strip()
+        data["B129"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Ingestion contact", "Delayed and", mode)).strip()
 
-        data["B132"] = extract_section_smart(all_lines, "A. Suitable (Unsuitable) extinguishing media", "B. Specific hazards", mode)
-        data["B134"] = extract_section_smart(all_lines, "B. Specific hazards arising from the chemical", "C. Special protective", mode)
-        data["B136"] = extract_section_smart(all_lines, "C. Special protective actions for firefighters", "6. ACCIDENTAL", mode)
+        data["B132"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Suitable", "Specific hazards", mode)).strip()
+        data["B134"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Specific hazards arising from the", "Special protective", mode)).strip()
+        data["B136"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Special protective actions", "6. ACCIDENTAL", mode)).strip()
 
-        data["B140"] = extract_section_smart(all_lines, "A. Personal precautions, protective", "B. Environmental", mode)
-        data["B142"] = extract_section_smart(all_lines, "B. Environmental precautions", "C. Methods and materials", mode)
-        data["B144"] = extract_section_smart(all_lines, "C. Methods and materials for containment", "7. HANDLING", mode)
+        data["B140"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Personal precautions", "Environmental precautions", mode)).strip()
+        data["B142"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Environmental precautions", "Methods and materials", mode)).strip()
+        data["B144"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Methods and materials for containment", "7. HANDLING", mode)).strip()
 
-        data["B148"] = extract_section_smart(all_lines, "A. Precautions for safe handling", "B. Conditions for safe", mode)
-        data["B150"] = extract_section_smart(all_lines, "B. Conditions for safe storage, including", "8. EXPOSURE", mode)
+        data["B148"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Precautions for safe", "Conditions for safe", mode)).strip()
+        data["B150"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Conditions for safe storage", "8. EXPOSURE", mode)).strip()
         
         result["sec4_to_7"] = data
 
         s8 = {}
-        s8_raw = extract_section_smart(all_lines, "○ ACGIH TLV", "○ OSHA PEL", mode)
-        if "-  Not applicable" in s8_raw or "- Not applicable" in s8_raw:
+        s8_raw = extract_section_smart(all_lines, "ACGIH TLV", "OSHA PEL", mode)
+        if "Not applicable" in s8_raw:
             s8["B154"] = "no data available"
-            s8["B156"] = ""
+            s8["B155"] = ""
         else:
-            s8["B154"] = s8_raw
-            s8["B156"] = ""
+            s8_lines = [re.sub(r'^[○\-\s]+', '', l).strip() for l in s8_raw.split('\n') if l.strip()]
+            s8["B154"] = s8_lines[0] if len(s8_lines) > 0 else "no data available"
+            s8["B155"] = "\n".join(s8_lines[1:]) if len(s8_lines) > 1 else ""
+        s8["B156"] = ""
         result["sec8"] = s8
 
         s9 = {}
-        color_raw = extract_section_smart(sec9_lines, "- Color", "B. Odor", mode).replace("-", "").strip()
-        if color_raw:
-            s9["B170"] = color_raw[0].upper() + color_raw[1:].lower()
-        else:
-            s9["B170"] = ""
-        s9["B176"] = extract_section_smart(sec9_lines, "G. Flash point", "H. Evaporation rate", mode).strip()
+        c_raw = extract_section_smart(sec9_lines, "Color", "Odor", mode)
+        c_cln = re.sub(r'^[\-\sA-Z\.]+', '', c_raw).strip()
+        s9["B170"] = c_cln.capitalize() if c_cln else ""
         
-        b183_raw = extract_section_smart(sec9_lines, "N. Specific gravity", "O. Partition coefficient", mode)
-        g_match = re.search(r'([\d\.]+)', b183_raw)
-        if g_match:
-            s9["B183"] = f"{g_match.group(1)} ± 0.010"
-        else:
-            s9["B183"] = ""
+        fp_raw = extract_section_smart(sec9_lines, "Flash point", "Evaporation rate", mode)
+        s9["B176"] = re.sub(r'^[\-\sA-Z\.]+', '', fp_raw).strip()
+        
+        sg_raw = extract_section_smart(sec9_lines, "Specific gravity", "Partition coefficient", mode)
+        g_m = re.search(r'([\d\.]+)', sg_raw)
+        s9["B183"] = f"{g_m.group(1)} ± 0.010" if g_m else ""
         s9["B189"] = "± 0.005"
         result["sec9"] = s9
 
         s14 = {}
-        un_text = extract_section_smart(all_lines, "A. UN No.", "B. Proper shipping name", mode)
-        s14["UN"] = re.sub(r'\D', '', un_text.replace("-", ""))
+        un_raw = extract_section_smart(all_lines, "UN No.", "Proper shipping name", mode)
+        s14["UN"] = re.sub(r'\D', '', un_raw)
         
-        name_text = extract_section_smart(all_lines, "B. Proper shipping name", "C. Hazard Class", mode).replace("-", "").strip()
-        name_text = re.sub(r'(?i)proper\s*shipping\s*name', '', name_text)
-        name_text = re.sub(r'(?i)shipping\s*name', '', name_text)
-        s14["NAME"] = re.sub(r'\([^)]*\)', '', name_text).strip()
+        name_raw = extract_section_smart(all_lines, "Proper shipping name", "Hazard Class", mode)
+        name_cln = re.sub(r'(?i)proper\s*shipping\s*name', '', name_raw)
+        name_cln = re.sub(r'(?i)shipping\s*name', '', name_cln)
+        s14["NAME"] = re.sub(r'\([^)]*\)', '', name_cln).replace("-", "").strip()
         result["sec14"] = s14
 
         result["sec15"] = {"DANGER": ""}
