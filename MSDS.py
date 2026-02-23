@@ -1087,7 +1087,9 @@ with col_center:
                 kor_data_map = {} 
                 eng_data_map = {} 
                 
+                # [수정 시작] CFF(K) 구조를 바탕으로 에러에 강건한 데이터 끌어오기 방식 적용
                 try:
+                    master_data_file.seek(0)
                     xls = pd.ExcelFile(master_data_file)
                     
                     target_sheet = None
@@ -1096,26 +1098,25 @@ with col_center:
                     
                     if target_sheet:
                         df_code = pd.read_excel(xls, sheet_name=target_sheet)
-                        if "K" in option:
-                            target_col_idx = 1
-                        else:
-                            target_col_idx = 2
+                        target_col_idx = 1 if "K" in option else 2
                         
                         for _, row in df_code.iterrows():
-                            if pd.notna(row.iloc[0]):
-                                code_key = str(row.iloc[0]).replace(" ","").upper().strip()
-                                if len(row) > target_col_idx:
-                                    val = row.iloc[target_col_idx]
+                            try:
+                                if pd.notna(row.iloc[0]):
+                                    code_key = str(row.iloc[0]).replace(" ","").upper().strip()
+                                    val = row.iloc[target_col_idx] if len(row) > target_col_idx else ""
                                     code_val = str(val).strip() if pd.notna(val) else ""
-                                    code_map[code_key] = code_val
+                                    if code_val and code_val != "nan": code_map[code_key] = code_val
+                            except: pass
                     
-                        if "K" in option:
-                            sheet_kor = None
-                            for sheet in xls.sheet_names:
-                                if "국문" in sheet: sheet_kor = sheet; break
-                            if sheet_kor:
-                                df_kor = pd.read_excel(xls, sheet_name=sheet_kor)
-                                for _, row in df_kor.iterrows():
+                    if "K" in option:
+                        sheet_kor = None
+                        for sheet in xls.sheet_names:
+                            if "국문" in sheet: sheet_kor = sheet; break
+                        if sheet_kor:
+                            df_kor = pd.read_excel(xls, sheet_name=sheet_kor)
+                            for _, row in df_kor.iterrows():
+                                try:
                                     val_cas = row.iloc[0]
                                     val_name = row.iloc[1]
                                     if pd.notna(val_cas):
@@ -1124,16 +1125,23 @@ with col_center:
                                         cas_name_map[c] = n
                                         if n:
                                             kor_data_map[n] = {
-                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                                'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                                'F': row.iloc[5] if len(row) > 5 else "", 
+                                                'G': row.iloc[6] if len(row) > 6 else "", 
+                                                'H': row.iloc[7] if len(row) > 7 else "",
+                                                'P': row.iloc[15] if len(row) > 15 else "", 
+                                                'T': row.iloc[19] if len(row) > 19 else "", 
+                                                'U': row.iloc[20] if len(row) > 20 else "", 
+                                                'V': row.iloc[21] if len(row) > 21 else ""
                                             }
-                        else: # E 모드 (CFF E 등)
-                            sheet_eng = None
-                            for sheet in xls.sheet_names:
-                                if "영문" in sheet: sheet_eng = sheet; break
-                            if sheet_eng:
-                                df_eng = pd.read_excel(xls, sheet_name=sheet_eng)
-                                for _, row in df_eng.iterrows():
+                                except: pass
+                    else: # E 모드 (CFF E 등)
+                        sheet_eng = None
+                        for sheet in xls.sheet_names:
+                            if "영문" in sheet: sheet_eng = sheet; break
+                        if sheet_eng:
+                            df_eng = pd.read_excel(xls, sheet_name=sheet_eng)
+                            for _, row in df_eng.iterrows():
+                                try:
                                     val_cas = row.iloc[0]
                                     val_name = row.iloc[1]
                                     if pd.notna(val_cas):
@@ -1142,13 +1150,20 @@ with col_center:
                                         cas_name_map[c] = n
                                         if n:
                                             eng_data_map[n] = {
-                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                                'P': row.iloc[15], 'Q': row.iloc[16], 
-                                                'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                                'F': row.iloc[5] if len(row) > 5 else "", 
+                                                'G': row.iloc[6] if len(row) > 6 else "", 
+                                                'H': row.iloc[7] if len(row) > 7 else "",
+                                                'P': row.iloc[15] if len(row) > 15 else "", 
+                                                'Q': row.iloc[16] if len(row) > 16 else "", 
+                                                'T': row.iloc[19] if len(row) > 19 else "", 
+                                                'U': row.iloc[20] if len(row) > 20 else "", 
+                                                'V': row.iloc[21] if len(row) > 21 else ""
                                             }
+                                except: pass
 
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
+                # [수정 끝]
 
                 kor_override_data = None
                 if option in ["CFF(E)", "HP(E)"] and kor_excel_file is not None:
