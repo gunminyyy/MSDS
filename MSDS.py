@@ -680,6 +680,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
     if mode == "CFF(E)":
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
+        
+        # [수정] "Category 숫자" 뒤에 줄바꿈 문자 추가
+        hazard_cls_text = re.sub(r'(Category\s*\d+[A-Za-z]?)', r'\1\n', hazard_cls_text)
+        
         hazard_cls_lines = []
         for line in hazard_cls_text.split('\n'):
             line = line.strip()
@@ -870,6 +874,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P5"): result["p_disp"].append(code)
 
     regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
+    # [수정] CFF(K) CAS 번호 인식 개선 (EC 번호 등과 혼동 방지)
     regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     regex_cas_ec_kill = re.compile(r'\b\d{2,7}\s*-\s*\d{2,3}\s*-\s*\d\b')
     regex_tilde_range = re.compile(r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)') 
@@ -902,9 +907,18 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                                 if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
                             except: pass
             else:
+                # [수정] CFF(K)에서도 엄격한 CAS 정규식 사용
                 cas_found = regex_cas_strict.findall(txt)
                 if cas_found:
+                    # 엄격한 CAS 형식이면 바로 채택
                     c_val = cas_found[0].replace(" ", "")
+                else:
+                    # 실패 시 기존 방식 시도 (하지만 EC 번호가 걸릴 수 있음)
+                    cas_found_loose = regex_cas_ec_kill.findall(txt)
+                    if cas_found_loose:
+                        potential_cas = cas_found_loose[0].replace(" ", "")
+                        if re.match(r'\d{2,7}-\d{2}-\d', potential_cas): c_val = potential_cas
+                
                 txt_clean = regex_cas_ec_kill.sub(" ", txt)
                 m_tilde = regex_tilde_range.search(txt_clean)
                 if m_tilde:
@@ -1291,6 +1305,48 @@ with col_center:
                             today_eng = datetime.now().strftime("%d. %b. %Y").upper()
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
 
+                            collected_pil_images = []
+                            page = doc[0]
+                            image_list = doc.get_page_images(0)
+                            
+                            for img_info in image_list:
+                                xref = img_info[0]
+                                try:
+                                    base_image = doc.extract_image(xref)
+                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                    
+                                    if is_blue_dominant(pil_img): continue
+                                    w, h = pil_img.size
+                                    if not is_square_shaped(w, h): continue
+
+                                    if loaded_refs:
+                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode="HP(K)")
+                                        if matched_name:
+                                            clean_img = loaded_refs[matched_name]
+                                            collected_pil_images.append((extract_number(matched_name), clean_img))
+                                except: continue
+                            
+                            unique_images = {}
+                            for key, img in collected_pil_images:
+                                if key not in unique_images: unique_images[key] = img
+                            
+                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
+
+                            if final_sorted_imgs:
+                                unit_size = 67; icon_size = 60
+                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                                total_width = unit_size * len(final_sorted_imgs)
+                                total_height = unit_size
+                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                                for idx, p_img in enumerate(final_sorted_imgs):
+                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                
+                                img_byte_arr = io.BytesIO()
+                                merged_img.save(img_byte_arr, format='PNG')
+                                img_byte_arr.seek(0)
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
+
                         elif option == "CFF(E)":
                             dest_ws['A50'].alignment = ALIGN_LEFT
                             dest_ws['A64'].alignment = ALIGN_LEFT
@@ -1379,6 +1435,44 @@ with col_center:
 
                             today_eng = datetime.now().strftime("%d. %b. %Y")
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
+                            
+                            collected_pil_images = []
+                            page = doc[0]
+                            image_list = doc.get_page_images(0)
+                            
+                            for img_info in image_list:
+                                xref = img_info[0]
+                                try:
+                                    base_image = doc.extract_image(xref)
+                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                    
+                                    if loaded_refs:
+                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                        if matched_name:
+                                            clean_img = loaded_refs[matched_name]
+                                            collected_pil_images.append((extract_number(matched_name), clean_img))
+                                except: continue
+                            
+                            unique_images = {}
+                            for key, img in collected_pil_images:
+                                if key not in unique_images: unique_images[key] = img
+                            
+                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
+
+                            if final_sorted_imgs:
+                                unit_size = 67; icon_size = 60
+                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                                total_width = unit_size * len(final_sorted_imgs)
+                                total_height = unit_size
+                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                                for idx, p_img in enumerate(final_sorted_imgs):
+                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                
+                                img_byte_arr = io.BytesIO()
+                                merged_img.save(img_byte_arr, format='PNG')
+                                img_byte_arr.seek(0)
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
 
                         else: # CFF(K) / HP(K)
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
@@ -1485,12 +1579,15 @@ with col_center:
                             
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
-                            safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
+
+                            s15 = parsed_data["sec15"]
+                            if option == "CFF(K)":
+                                safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
 
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                        # [추가] CFF(E) 모드에도 이미지 삽입 적용 (B22 셀)
+                        # [HP(K) 이미지 복원: 과거 코드 로직 적용]
                         if option in ["CFF(K)", "HP(K)", "CFF(E)"]:
                             collected_pil_images = []
                             page = doc[0]
@@ -1508,8 +1605,6 @@ with col_center:
                                         if not is_square_shaped(w, h): continue
 
                                     if loaded_refs:
-                                        # find_best_match_name 함수 내부에 CFF(E) 처리 로직이 없었으나,
-                                        # mode="CFF(K)" 파라미터를 그대로 넘기면 CFF 방식의 필터링을 타게 됩니다.
                                         matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
                                         if matched_name:
                                             clean_img = loaded_refs[matched_name]
@@ -1535,6 +1630,7 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
+                                # CFF(E)는 B22, 나머지는 B23
                                 dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
