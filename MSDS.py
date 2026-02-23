@@ -401,7 +401,10 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             "Internal regulations", "ACGIH regulations", "Biological exposure standards",
             "arising from the", ", protective", "precautions", "and materials for containment", 
             "for safe handling", "for safe storage, including", "conditions for safe storage, including",
-            "equipment and emergency procedures", "and cleaning up", "any incompatibilities"
+            # [HP(E) 추가 Garbage]
+            "equipment and emergency procedures", "and cleaning up", "any incompatibilities",
+            "suitable (unsuitable) extinguishing media", "specific hazards", "special protective", "for firefighters",
+            "handling", "incompatible materials", "safe storage", "contact with"
         ]
         sensitive_garbage_regex = []
     elif mode == "HP(K)":
@@ -525,8 +528,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     sec9_lines = []
     start_9 = -1; end_9 = -1
     for i, line in enumerate(all_lines):
-        if "9. Physical" in line['text'] or "9. 물리화학" in line['text']: start_9 = i
-        if "10. Stability" in line['text'] or "10. 안정성" in line['text']: end_9 = i; break
+        # [수정] Section 9 키워드 검색 범위 넓힘 (대소문자 무시 등)
+        if "9. PHYSICAL" in line['text'].upper() or "9. 물리화학" in line['text']: start_9 = i
+        if "10. STABILITY" in line['text'].upper() or "10. 안정성" in line['text']: end_9 = i; break
     if start_9 != -1:
         if end_9 == -1: end_9 = len(all_lines)
         sec9_lines = all_lines[start_9:end_9]
@@ -537,8 +541,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["hazard_cls"] = [l.strip() for l in b19_clean.split('\n') if l.strip()]
 
         sig_raw = extract_section_smart(all_lines, "Signal word", "Hazard statement", mode)
-        result["signal_word"] = re.sub(r'^[\-\s○]+', '', sig_raw).strip()
+        # [수정] s 제거 및 하이픈 제거 강화
+        result["signal_word"] = re.sub(r'^s\s+', '', sig_raw.strip(), flags=re.IGNORECASE).replace("-", "").strip()
 
+        # [수정] H코드 범위 제한 (B132 오인식 방지)
         h_search_text = extract_section_smart(all_lines, "Hazard statement", "Precautionary statement", mode)
         result["h_codes"] = extract_codes_ordered(h_search_text)
 
@@ -547,24 +553,47 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["p_stor"] = extract_codes_ordered(extract_section_smart(all_lines, "3) Storage", "4) Disposal", mode))
         result["p_disp"] = extract_codes_ordered(extract_section_smart(all_lines, "4) Disposal", "C. Other hazards", mode))
 
+        # [수정] Section 3 함유량 인식 오류 수정
         comp_text = extract_section_smart(all_lines, "3. COMPOSITION", "4. FIRST AID", mode)
-        regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
-        regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
         
-        cas_list = regex_cas.findall(comp_text)
+        # 1. CAS 번호 찾기 (Trade names 등 제외하고 순수 CAS만)
+        regex_cas_strict = re.compile(r'\b\d{2,7}\s*-\s*\d{2}\s*-\s*\d\b')
+        cas_list = regex_cas_strict.findall(comp_text)
+        
         conc_list = []
-        comp_text_no_cas = regex_cas.sub(" ", comp_text)
+        # 2. CAS 번호를 지운 텍스트에서 함유량 범위만 찾기
+        comp_text_no_cas = regex_cas_strict.sub(" ", comp_text)
+        
+        # 함유량 정규식: 숫자-숫자 (소수점 포함 가능)
+        regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b')
+        
         for match in regex_conc.finditer(comp_text_no_cas):
             v1_s, v2_s = match.group(1), match.group(2)
+            
+            # 소수점 있으면 제외 (요청사항)
             if "." in v1_s or "." in v2_s: continue
+            
+            # CAS 번호의 일부분이 아닌지 체크 (100 이하만 함유량으로 인정)
             if float(v1_s) <= 100 and float(v2_s) <= 100:
                 if v1_s == "1": v1_s = "0"
                 conc_list.append(f"{v1_s} ~ {v2_s}")
                 
+        # 개수 맞춰서 저장
         for i in range(max(len(cas_list), len(conc_list))):
             c = cas_list[i] if i < len(cas_list) else ""
             cn = conc_list[i] if i < len(conc_list) else ""
             if c or cn: result["composition_data"].append((c, cn))
+
+        # [수정] Section 5 범위 및 Garbage 제거
+        # 검색 범위를 "5. FIREFIGHTING" 이후로 한정하기 위해 all_lines 슬라이싱 필요하나,
+        # extract_section_smart의 특성상 고유 키워드면 됨.
+        # "A. Suitable"이 중복될 수 있으므로 Section 5 내부 텍스트를 먼저 찾음.
+        sec5_lines = []
+        for i, line in enumerate(all_lines):
+            if "5. FIREFIGHTING" in line['text']: 
+                sec5_lines = all_lines[i:]
+                break
+        if not sec5_lines: sec5_lines = all_lines
 
         data = {}
         data["B126"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Eye contact", "Skin contact", mode)).strip()
@@ -572,9 +601,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Inhalation contact", "Ingestion contact", mode)).strip()
         data["B129"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Ingestion contact", "Delayed and", mode)).strip()
 
-        data["B132"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Suitable", "Specific hazards", mode)).strip()
-        data["B134"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Specific hazards arising from the", "Special protective", mode)).strip()
-        data["B136"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Special protective actions", "6. ACCIDENTAL", mode)).strip()
+        # Section 5 (범위 제한된 lines 사용)
+        data["B132"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Suitable", "Specific hazards", mode)).strip()
+        data["B134"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Specific hazards arising", "Special protective", mode)).strip()
+        data["B136"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Special protective actions", "6. ACCIDENTAL", mode)).strip()
 
         data["B140"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Personal precautions", "Environmental precautions", mode)).strip()
         data["B142"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Environmental precautions", "Methods and materials", mode)).strip()
@@ -585,28 +615,43 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         
         result["sec4_to_7"] = data
 
-        s8 = {}
+        # [수정] Section 8 (ACGIH/OSHA)
         s8_raw = extract_section_smart(all_lines, "ACGIH TLV", "OSHA PEL", mode)
-        if "Not applicable" in s8_raw:
+        # 특수기호 등 제거하고 텍스트만 추출
+        s8_clean = re.sub(r'[○•\-\*]+', '', s8_raw).strip()
+        
+        s8 = {}
+        if "Not applicable" in s8_clean:
             s8["B154"] = "no data available"
             s8["B155"] = ""
         else:
-            s8_lines = [re.sub(r'^[○\-\s]+', '', l).strip() for l in s8_raw.split('\n') if l.strip()]
-            s8["B154"] = s8_lines[0] if len(s8_lines) > 0 else "no data available"
-            s8["B155"] = "\n".join(s8_lines[1:]) if len(s8_lines) > 1 else ""
+            # 줄바꿈 기준으로 분리
+            lines = [l.strip() for l in s8_clean.split('\n') if l.strip()]
+            s8["B154"] = lines[0] if len(lines) > 0 else "no data available"
+            s8["B155"] = "\n".join(lines[1:]) if len(lines) > 1 else ""
         s8["B156"] = ""
         result["sec8"] = s8
 
+        # [수정] Section 9 (물리화학) - 범위 내에서 키워드 직접 검색
         s9 = {}
-        c_raw = extract_section_smart(sec9_lines, "Color", "Odor", mode)
-        c_cln = re.sub(r'^[\-\sA-Z\.]+', '', c_raw).strip()
-        s9["B170"] = c_cln.capitalize() if c_cln else ""
+        def find_val_in_sec9(lines, keyword):
+            for l in lines:
+                if keyword.lower() in l['text'].lower():
+                    # 키워드 이후 내용 반환 (예: "- Color : Colorless" -> "Colorless")
+                    parts = l['text'].split(keyword, 1)
+                    if len(parts) > 1:
+                        val = re.sub(r'^[:\s\-\.]+', '', parts[1]).strip()
+                        if val: return val
+                    # 키워드만 있고 값은 다음 줄에 있을 수도 있음 (간단한 구현 위해 생략하거나 추가 로직 필요)
+            return ""
+
+        c_val = find_val_in_sec9(sec9_lines, "Color")
+        s9["B170"] = c_val.capitalize() if c_val else ""
         
-        fp_raw = extract_section_smart(sec9_lines, "Flash point", "Evaporation rate", mode)
-        s9["B176"] = re.sub(r'^[\-\sA-Z\.]+', '', fp_raw).strip()
+        s9["B176"] = find_val_in_sec9(sec9_lines, "Flash point")
         
-        sg_raw = extract_section_smart(sec9_lines, "Specific gravity", "Partition coefficient", mode)
-        g_m = re.search(r'([\d\.]+)', sg_raw)
+        sg_val = find_val_in_sec9(sec9_lines, "Specific gravity")
+        g_m = re.search(r'([\d\.]+)', sg_val)
         s9["B183"] = f"{g_m.group(1)} ± 0.010" if g_m else ""
         s9["B189"] = "± 0.005"
         result["sec9"] = s9
