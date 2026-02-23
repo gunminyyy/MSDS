@@ -54,14 +54,12 @@ def get_description_smart(code, code_map):
         if found_texts: return " ".join(found_texts)
     return ""
 
-# [수정] 모드(국/영문)에 따라 1줄당 글자수 다르게 적용 및 4줄 높이 추가
 def calculate_smart_height_basic(text, mode="CFF(K)"): 
     if not text: return 19.2
     
     lines = str(text).split('\n')
     total_visual_lines = 0
     
-    # 영문은 글자 폭이 좁아 1줄에 약 70자 진입 가능, 국문은 45자 유지
     if "E" in mode:
         char_limit = 70.0
     else:
@@ -73,7 +71,6 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
         else:
             total_visual_lines += math.ceil(len(line) / char_limit)
             
-    # 계산된 시각적 줄 수에 따른 행 높이 반환
     if total_visual_lines <= 1: 
         return 19.2
     elif total_visual_lines == 2: 
@@ -81,17 +78,14 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     elif total_visual_lines == 3: 
         return 36.0
     else: 
-        return 45.0 # 4줄 이상일 경우 45.0 적용
+        return 45.0
 
 def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
     
     if "E" in mode:
-        # 영문일 때는 마침표 뒤에 무조건 줄바꿈(\n)하는 것을 막음.
-        # 대신, 마침표 바로 뒤에 영문자가 붙어있을 경우(예: unattended.If) 띄어쓰기만 1칸 추가함
         formatted_text = re.sub(r'(?<!\d)\.([A-Za-z])', r'. \1', text)
     else:
-        # 국문은 기존처럼 마침표 뒤 강제 줄바꿈 유지
         formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
         
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
@@ -110,7 +104,6 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
     height = (total_visual_lines * 10) + 10
     return final_text, height
 
-# [수정] 모드 파라미터 전달받도록 수정
 def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
     unique_codes = []; seen = set()
     for c in codes:
@@ -123,10 +116,7 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
             code = unique_codes[i]
             desc = get_description_smart(code, code_map)
             ws.row_dimensions[current_row].hidden = False
-            
-            # [수정] 높이 계산 시 mode 전달
             final_height = calculate_smart_height_basic(desc, mode)
-            
             ws.row_dimensions[current_row].height = final_height
             safe_write_force(ws, current_row, 2, code, center=False)
             safe_write_force(ws, current_row, 4, desc, center=False)
@@ -423,7 +413,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
         garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 방법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제", "- 색", "(및 부적절한) 소화제", "특정 유해성", "보호하기 위해 필요한 조치 사항 및 보호구", "저장 방법"]
         sensitive_garbage_regex = [r"^시\s+", r"^또는\s+", r"^의\s+"]
     else: 
-        garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 정법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제"]
+        garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 방법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제"]
         sensitive_garbage_regex = [r"^시\s+", r"^또는\s+", r"^의\s+"]
 
     cleaned_lines = []
@@ -690,6 +680,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
     if mode == "CFF(E)":
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
+        
+        # [수정] "Category 숫자" 뒤에 줄바꿈 문자 추가
+        hazard_cls_text = re.sub(r'(Category\s*\d+[A-Za-z]?)', r'\1\n', hazard_cls_text)
+        
         hazard_cls_lines = []
         for line in hazard_cls_text.split('\n'):
             line = line.strip()
@@ -880,6 +874,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P5"): result["p_disp"].append(code)
 
     regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
+    # [수정] CFF(K) CAS 번호 인식 개선 (EC 번호 등과 혼동 방지)
     regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     regex_cas_ec_kill = re.compile(r'\b\d{2,7}\s*-\s*\d{2,3}\s*-\s*\d\b')
     regex_tilde_range = re.compile(r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)') 
@@ -912,10 +907,18 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                                 if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
                             except: pass
             else:
-                cas_found = regex_cas_ec_kill.findall(txt)
+                # [수정] CFF(K)에서도 엄격한 CAS 정규식 사용
+                cas_found = regex_cas_strict.findall(txt)
                 if cas_found:
-                    potential_cas = cas_found[0].replace(" ", "")
-                    if re.match(r'\d{2,7}-\d{2}-\d', potential_cas): c_val = potential_cas
+                    # 엄격한 CAS 형식이면 바로 채택
+                    c_val = cas_found[0].replace(" ", "")
+                else:
+                    # 실패 시 기존 방식 시도 (하지만 EC 번호가 걸릴 수 있음)
+                    cas_found_loose = regex_cas_ec_kill.findall(txt)
+                    if cas_found_loose:
+                        potential_cas = cas_found_loose[0].replace(" ", "")
+                        if re.match(r'\d{2,7}-\d{2}-\d', potential_cas): c_val = potential_cas
+                
                 txt_clean = regex_cas_ec_kill.sub(" ", txt)
                 m_tilde = regex_tilde_range.search(txt_clean)
                 if m_tilde:
@@ -1085,14 +1088,15 @@ with col_center:
                 eng_data_map = {} 
                 
                 try:
-                    xls = pd.ExcelFile(master_data_file)
+                    file_bytes = master_data_file.getvalue()
+                    xls = pd.ExcelFile(io.BytesIO(file_bytes))
                     
                     target_sheet = None
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
                     
                     if target_sheet:
-                        df_code = pd.read_excel(master_data_file, sheet_name=target_sheet)
+                        df_code = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet)
                         if "K" in option:
                             target_col_idx = 1
                         else:
@@ -1106,43 +1110,43 @@ with col_center:
                                     code_val = str(val).strip() if pd.notna(val) else ""
                                     code_map[code_key] = code_val
                     
-                    if "K" in option:
-                        sheet_kor = None
-                        for sheet in xls.sheet_names:
-                            if "국문" in sheet: sheet_kor = sheet; break
-                        if sheet_kor:
-                            df_kor = pd.read_excel(master_data_file, sheet_name=sheet_kor)
-                            for _, row in df_kor.iterrows():
-                                val_cas = row.iloc[0]
-                                val_name = row.iloc[1]
-                                if pd.notna(val_cas):
-                                    c = str(val_cas).replace(" ", "").strip()
-                                    n = str(val_name).strip() if pd.notna(val_name) else ""
-                                    cas_name_map[c] = n
-                                    if n:
-                                        kor_data_map[n] = {
-                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                            'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                        }
-                    else: # E 모드 (CFF E 등)
-                        sheet_eng = None
-                        for sheet in xls.sheet_names:
-                            if "영문" in sheet: sheet_eng = sheet; break
-                        if sheet_eng:
-                            df_eng = pd.read_excel(master_data_file, sheet_name=sheet_eng)
-                            for _, row in df_eng.iterrows():
-                                val_cas = row.iloc[0]
-                                val_name = row.iloc[1]
-                                if pd.notna(val_cas):
-                                    c = str(val_cas).replace(" ", "").strip()
-                                    n = str(val_name).strip() if pd.notna(val_name) else ""
-                                    cas_name_map[c] = n
-                                    if n:
-                                        eng_data_map[n] = {
-                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                            'P': row.iloc[15], 'Q': row.iloc[16], 
-                                            'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                        }
+                        if "K" in option:
+                            sheet_kor = None
+                            for sheet in xls.sheet_names:
+                                if "국문" in sheet: sheet_kor = sheet; break
+                            if sheet_kor:
+                                df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
+                                for _, row in df_kor.iterrows():
+                                    val_cas = row.iloc[0]
+                                    val_name = row.iloc[1]
+                                    if pd.notna(val_cas):
+                                        c = str(val_cas).replace(" ", "").strip()
+                                        n = str(val_name).strip() if pd.notna(val_name) else ""
+                                        cas_name_map[c] = n
+                                        if n:
+                                            kor_data_map[n] = {
+                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                                'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                            }
+                        else: # E 모드 (CFF E 등)
+                            sheet_eng = None
+                            for sheet in xls.sheet_names:
+                                if "영문" in sheet: sheet_eng = sheet; break
+                            if sheet_eng:
+                                df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
+                                for _, row in df_eng.iterrows():
+                                    val_cas = row.iloc[0]
+                                    val_name = row.iloc[1]
+                                    if pd.notna(val_cas):
+                                        c = str(val_cas).replace(" ", "").strip()
+                                        n = str(val_name).strip() if pd.notna(val_name) else ""
+                                        cas_name_map[c] = n
+                                        if n:
+                                            eng_data_map[n] = {
+                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                                'P': row.iloc[15], 'Q': row.iloc[16], 
+                                                'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                            }
 
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
@@ -1342,7 +1346,7 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22')
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
 
                         elif option == "CFF(E)":
                             dest_ws['A50'].alignment = ALIGN_LEFT
@@ -1576,12 +1580,16 @@ with col_center:
                             
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
-                            safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
+
+                            s15 = parsed_data["sec15"]
+                            if option == "CFF(K)":
+                                safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
 
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                        if option in ["CFF(K)", "HP(K)"]:
+                        # [HP(K) 이미지 복원: 과거 코드 로직 적용]
+                        if option in ["CFF(K)", "HP(K)", "CFF(E)"]:
                             collected_pil_images = []
                             page = doc[0]
                             image_list = doc.get_page_images(0)
@@ -1623,7 +1631,8 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B23') 
+                                # CFF(E)는 B22, 나머지는 B23
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
                         output = io.BytesIO()
