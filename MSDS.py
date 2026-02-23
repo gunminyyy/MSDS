@@ -877,8 +877,8 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     in_comp = False
     for line in all_lines:
         txt = line['text']
-        if "3." in txt and ("성분" in txt or "Composition" in txt): in_comp=True; continue
-        if "4." in txt and ("응급" in txt or "First" in txt): in_comp=False; break
+        if "3." in txt and ("성분" in txt or "Composition" in txt or "COMPOSITION" in txt): in_comp=True; continue
+        if "4." in txt and ("응급" in txt or "First" in txt or "FIRST" in txt): in_comp=False; break
         if in_comp:
             if re.search(r'^\d+\.\d+', txt): continue 
             
@@ -1033,6 +1033,14 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
 
     with col2:
         template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
+    
+    st.markdown("---")
+    st.markdown("💡 **(선택) 영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
+    col3, col4 = st.columns(2)
+    with col3:
+        kor_excel_file = st.file_uploader("3. 국문 엑셀 파일", type="xlsx")
+    with col4:
+        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~60, 물질 61~103행)"])
 
 product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
@@ -1126,10 +1134,69 @@ with col_center:
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
 
+                # [추가] 영문 양식 생성 시, 국문 엑셀 파일이 존재하면 데이터를 추출하여 덮어씌움
+                kor_override_data = None
+                if option in ["CFF(E)", "HP(E)"] and kor_excel_file is not None:
+                    kor_excel_file.seek(0)
+                    kor_wb = load_workbook(io.BytesIO(kor_excel_file.read()), data_only=True)
+                    kor_ws = kor_wb.active
+                    kor_override_data = {
+                        "h_codes": [], "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
+                        "composition_data": []
+                    }
+                    
+                    def ext_codes(ws, s_r, e_r, col=2):
+                        res = []
+                        regex = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+                        for r in range(s_r, e_r + 1):
+                            val = ws.cell(row=r, column=col).value
+                            if val:
+                                matches = regex.findall(str(val))
+                                for m in matches:
+                                    c = m.replace(" ", "").upper()
+                                    if c not in res: res.append(c)
+                        return res
+
+                    def ext_comp(ws, s_r, e_r, cas_col=4, conc_col=6):
+                        res = []
+                        for r in range(s_r, e_r + 1):
+                            cas = ws.cell(row=r, column=cas_col).value
+                            conc = ws.cell(row=r, column=conc_col).value
+                            if cas and str(cas).strip():
+                                c_val = str(cas).strip()
+                                cn_val = str(conc).strip() if conc else ""
+                                res.append((c_val, cn_val))
+                        return res
+
+                    if "신버전" in kor_form_version:
+                        kor_override_data["h_codes"] = ext_codes(kor_ws, 25, 36)
+                        kor_override_data["p_prev"] = ext_codes(kor_ws, 38, 49)
+                        kor_override_data["p_resp"] = ext_codes(kor_ws, 50, 63)
+                        kor_override_data["p_stor"] = ext_codes(kor_ws, 64, 69)
+                        kor_override_data["p_disp"] = ext_codes(kor_ws, 70, 72)
+                        kor_override_data["composition_data"] = ext_comp(kor_ws, 80, 122)
+                    else:
+                        all_c = ext_codes(kor_ws, 25, 60)
+                        kor_override_data["h_codes"] = [c for c in all_c if c.startswith('H')]
+                        kor_override_data["p_prev"] = [c for c in all_c if c.startswith('P2')]
+                        kor_override_data["p_resp"] = [c for c in all_c if c.startswith('P3')]
+                        kor_override_data["p_stor"] = [c for c in all_c if c.startswith('P4')]
+                        kor_override_data["p_disp"] = [c for c in all_c if c.startswith('P5')]
+                        kor_override_data["composition_data"] = ext_comp(kor_ws, 61, 103)
+
                 for uploaded_file in uploaded_files:
                     try:
                         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
                         parsed_data = parse_pdf_final(doc, mode=option)
+                        
+                        # [적용] 추출된 국문 엑셀 데이터로 PDF 파싱 데이터를 덮어쓰기
+                        if option in ["CFF(E)", "HP(E)"] and kor_override_data:
+                            parsed_data["h_codes"] = kor_override_data["h_codes"]
+                            parsed_data["p_prev"] = kor_override_data["p_prev"]
+                            parsed_data["p_resp"] = kor_override_data["p_resp"]
+                            parsed_data["p_stor"] = kor_override_data["p_stor"]
+                            parsed_data["p_disp"] = kor_override_data["p_disp"]
+                            parsed_data["composition_data"] = kor_override_data["composition_data"]
                         
                         template_file.seek(0)
                         dest_wb = load_workbook(io.BytesIO(template_file.read()))
