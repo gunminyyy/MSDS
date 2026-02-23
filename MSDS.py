@@ -495,11 +495,10 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
                 prev_txt = prev['text'].strip()
                 curr_txt = curr['text'].strip()
                 
-                ends_with_punctuation = re.search(r'[\.:;!]$', prev_txt)
                 starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.)", curr_txt)
-                starts_with_cap = re.match(r"^[A-Z]", curr_txt)
+                gap = curr['global_y0'] - prev['global_y1']
                 
-                if starts_with_bullet or (starts_with_cap and ends_with_punctuation):
+                if starts_with_bullet or gap >= 3.0:
                     final_text += "\n" + curr_txt
                 else:
                     final_text += " " + curr_txt
@@ -1123,8 +1122,6 @@ with col_center:
                 kor_data_map = {} 
                 eng_data_map = {} 
                 
-                # [완벽 보완] 중앙 데이터 로드 부분을 가장 처음 성공했던 원본 로직으로 완벽하게 복구했습니다.
-                # (파일 끊김 방지를 위해 io.BytesIO(file_bytes)만 사용)
                 try:
                     file_bytes = master_data_file.getvalue()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
@@ -1622,6 +1619,9 @@ with col_center:
                             
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
+
+                            # [추가] 운송에서의 위험성 등급(CLASS)을 B514에 입력
+                            safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
 
                             s15 = parsed_data["sec15"]
                             if option == "CFF(K)":
