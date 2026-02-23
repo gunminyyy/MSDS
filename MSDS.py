@@ -551,7 +551,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["p_stor"] = extract_codes_ordered(extract_section_smart(all_lines, "3) Storage", "4) Disposal", mode))
         result["p_disp"] = extract_codes_ordered(extract_section_smart(all_lines, "4) Disposal", "C. Other hazards", mode))
 
-        # [수정] HP(E) 성분 데이터 추출 (CAS 번호 뒷부분 숫자만 함유량으로 인정)
         in_comp = False
         for line in all_lines:
             txt = line['text']
@@ -569,16 +568,13 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 
                 if cas_found:
                     c_val = cas_found[0].replace(" ", "")
-                    # CAS 번호의 인덱스를 찾아 그 이후의 텍스트에서만 범위를 찾음
                     idx = txt.find(cas_found[0])
                     txt_after_cas = txt[idx + len(cas_found[0]):]
                     
                     m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_after_cas)
                     if m_range:
                         s, e = m_range.group(1), m_range.group(2)
-                        # 소수점이 포함된 범위는 버림
                         if "." not in s and "." not in e:
-                            # 100 초과 숫자는 EC 번호 등으로 간주하여 무시
                             if float(s) <= 100 and float(e) <= 100:
                                 if s == "1": s = "0"
                                 cn_val = f"{s} ~ {e}"
@@ -607,7 +603,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Inhalation contact", "Ingestion contact", mode)).strip()
         data["B129"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Ingestion contact", "Delayed and", mode)).strip()
 
-        # [수정] HP(E) 전용 불필요 제목 강제 제거 로직 추가
         b132_raw = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Suitable", "Specific hazards", mode)).strip()
         data["B132"] = re.sub(r'(?i)^\s*\(unsuitable\)\s*extinguishing\s*media\s*', '', b132_raw).strip()
         
@@ -629,7 +624,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         
         result["sec4_to_7"] = data
 
-        # [수정] Section 8 (ACGIH/OSHA) B156:158 처리 로직
         s8_raw = extract_section_smart(all_lines, "ACGIH", "OSHA", mode)
         s8_raw = re.sub(r'(?i)^.*TLV\s*', '', s8_raw).strip()
         s8_clean = re.sub(r'[○•\-\*]+', '', s8_raw).strip()
@@ -668,6 +662,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["sec9"] = s9
 
         s14 = {}
+        # [수정] CFF(K)/HP(K)와 동일하게 운송 위험성 등급(CLASS) 파싱 추가
         un_raw = extract_section_smart(all_lines, "UN No.", "Proper shipping name", mode)
         s14["UN"] = re.sub(r'\D', '', un_raw)
         
@@ -675,6 +670,14 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         name_cln = re.sub(r'(?i)proper\s*shipping\s*name', '', name_raw)
         name_cln = re.sub(r'(?i)shipping\s*name', '', name_cln)
         s14["NAME"] = re.sub(r'\([^)]*\)', '', name_cln).replace("-", "").strip()
+        
+        # 클래스(위험성 등급) 추출 로직 (B514용)
+        # HP(K)/CFF(K)에서는 "다. 운송에서의 위험성 등급" ~ "라. 용기등급" 사이를 추출했음.
+        # HP(E)에서는 "Hazard Class" ~ "Packing group" 사이를 추출.
+        class_raw = extract_section_smart(all_lines, "Hazard Class", "Packing group", mode)
+        class_match = re.search(r'(\d)', class_raw)
+        s14["CLASS"] = class_match.group(1) if class_match else ""
+        
         result["sec14"] = s14
 
         result["sec15"] = {"DANGER": ""}
@@ -992,10 +995,16 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     if mode == "HP(K)":
         un_no = extract_section_smart(sec14_lines, "유엔번호", "나. 유엔", mode)
         ship_name = extract_section_smart(sec14_lines, "유엔 적정 선적명", ["다. 운송에서의", "다.운송에서의"], mode)
+        class_raw = extract_section_smart(sec14_lines, "다. 운송에서의 위험성 등급", ["라. 용기등급", "라.용기등급"], mode)
     else:
         un_no = extract_section_smart(sec14_lines, "유엔번호", "나. 적정선적명", mode)
         ship_name = extract_section_smart(sec14_lines, "적정선적명", ["다. 운송에서의", "다.운송에서의"], mode)
-    result["sec14"] = {"UN": un_no, "NAME": ship_name}
+        class_raw = extract_section_smart(sec14_lines, "다. 운송에서의 위험성 등급", ["라. 용기등급", "라.용기등급"], mode)
+        
+    if mode in ["HP(K)", "CFF(K)"]:
+        class_match = re.search(r'(\d)', class_raw)
+        ship_class = class_match.group(1) if class_match else ""
+        result["sec14"] = {"UN": un_no, "NAME": ship_name, "CLASS": ship_class}
 
     sec15_lines = []
     start_15 = -1; end_15 = -1
@@ -1020,15 +1029,15 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        master_data_file = st.file_uploader("MSDS 데이터 (ingredients...xlsx)", type="xlsx")
+        master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
         loaded_refs, folder_exists = get_reference_images()
         if folder_exists and loaded_refs:
-            st.success(f"✅ 신호어 {len(loaded_refs)}개 로드됨")
+            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
         elif not folder_exists:
             st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
     with col2:
-        template_file = st.file_uploader("양식 파일 (GHS MSDS 양식)", type="xlsx")
+        template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
 
 product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
@@ -1041,7 +1050,7 @@ if 'converted_files' not in st.session_state:
     st.session_state['download_data'] = {}
 
 with col_left:
-    st.subheader("원본 파일 업로드")
+    st.subheader("3. 원본 파일 업로드")
     uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
 
 with col_center:
@@ -1140,6 +1149,10 @@ with col_center:
                                 if cell.column == 2 and cell.data_type == 'f': cell.value = ""
 
                         if option == "HP(E)":
+                            dest_ws['A50'].alignment = ALIGN_LEFT
+                            dest_ws['A64'].alignment = ALIGN_LEFT
+                            dest_ws['A70'].alignment = ALIGN_LEFT
+                            
                             safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
                             safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
                             
@@ -1258,6 +1271,10 @@ with col_center:
                                 dest_ws.add_image(XLImage(img_byte_arr), 'B22')
 
                         elif option == "CFF(E)":
+                            dest_ws['A50'].alignment = ALIGN_LEFT
+                            dest_ws['A64'].alignment = ALIGN_LEFT
+                            dest_ws['A70'].alignment = ALIGN_LEFT
+                            
                             safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
                             safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
                             
@@ -1341,6 +1358,44 @@ with col_center:
 
                             today_eng = datetime.now().strftime("%d. %b. %Y")
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
+                            
+                            collected_pil_images = []
+                            page = doc[0]
+                            image_list = doc.get_page_images(0)
+                            
+                            for img_info in image_list:
+                                xref = img_info[0]
+                                try:
+                                    base_image = doc.extract_image(xref)
+                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                    
+                                    if loaded_refs:
+                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                        if matched_name:
+                                            clean_img = loaded_refs[matched_name]
+                                            collected_pil_images.append((extract_number(matched_name), clean_img))
+                                except: continue
+                            
+                            unique_images = {}
+                            for key, img in collected_pil_images:
+                                if key not in unique_images: unique_images[key] = img
+                            
+                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
+
+                            if final_sorted_imgs:
+                                unit_size = 67; icon_size = 60
+                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                                total_width = unit_size * len(final_sorted_imgs)
+                                total_height = unit_size
+                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                                for idx, p_img in enumerate(final_sorted_imgs):
+                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                
+                                img_byte_arr = io.BytesIO()
+                                merged_img.save(img_byte_arr, format='PNG')
+                                img_byte_arr.seek(0)
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
 
                         else: # CFF(K) / HP(K)
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
@@ -1447,15 +1502,11 @@ with col_center:
                             
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
-
-                            s15 = parsed_data["sec15"]
-                            if option == "CFF(K)":
-                                safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
+                            safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
 
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                        # [HP(K) 이미지 복원: 과거 코드 로직 적용]
                         if option in ["CFF(K)", "HP(K)"]:
                             collected_pil_images = []
                             page = doc[0]
@@ -1498,8 +1549,7 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                # CFF(E)는 B22, 나머지는 B23
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B23') 
 
                         dest_wb.external_links = []
                         output = io.BytesIO()
@@ -1542,4 +1592,3 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
-
