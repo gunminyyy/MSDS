@@ -61,7 +61,8 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        char_limit = 70.0
+        # [수정] 영문 H/P 코드 행 높이 민감도 조정 (70 -> 50)
+        char_limit = 50.0
     else:
         char_limit = 45.0
     
@@ -84,7 +85,8 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
     
     if "E" in mode:
-        formatted_text = re.sub(r'(?<!\d)\.([A-Za-z])', r'. \1', text)
+        # [수정] 영문(E) 모드에서도 마침표 뒤 줄바꿈 적용 (문장 구분을 위해)
+        formatted_text = re.sub(r'(?<!\d)\.\s+([A-Z])', r'.\n\1', text)
     else:
         formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
         
@@ -1404,6 +1406,9 @@ with col_center:
                                 formatted, h = format_and_calc_height_sec47(val, mode=option)
                                 r_idx = int(re.search(r'\d+', addr).group())
                                 safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
+                                
+                                # [수정] 최소 높이 24.0 보장 (CFF(E) Sec 4-8)
+                                if h < 24.0: h = 24.0
                                 dest_ws.row_dimensions[r_idx].height = h
 
                             s8 = parsed_data["sec8"]
@@ -1631,7 +1636,6 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                # CFF(E)는 B22, 나머지는 B23
                                 dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
