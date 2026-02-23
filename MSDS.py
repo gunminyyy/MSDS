@@ -54,12 +54,14 @@ def get_description_smart(code, code_map):
         if found_texts: return " ".join(found_texts)
     return ""
 
+# [수정] 모드(국/영문)에 따라 1줄당 글자수 다르게 적용 및 4줄 높이 추가
 def calculate_smart_height_basic(text, mode="CFF(K)"): 
     if not text: return 19.2
     
     lines = str(text).split('\n')
     total_visual_lines = 0
     
+    # 영문은 글자 폭이 좁아 1줄에 약 70자 진입 가능, 국문은 45자 유지
     if "E" in mode:
         char_limit = 70.0
     else:
@@ -71,6 +73,7 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
         else:
             total_visual_lines += math.ceil(len(line) / char_limit)
             
+    # 계산된 시각적 줄 수에 따른 행 높이 반환
     if total_visual_lines <= 1: 
         return 19.2
     elif total_visual_lines == 2: 
@@ -78,14 +81,17 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     elif total_visual_lines == 3: 
         return 36.0
     else: 
-        return 45.0
+        return 45.0 # 4줄 이상일 경우 45.0 적용
 
 def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
     
     if "E" in mode:
+        # 영문일 때는 마침표 뒤에 무조건 줄바꿈(\n)하는 것을 막음.
+        # 대신, 마침표 바로 뒤에 영문자가 붙어있을 경우(예: unattended.If) 띄어쓰기만 1칸 추가함
         formatted_text = re.sub(r'(?<!\d)\.([A-Za-z])', r'. \1', text)
     else:
+        # 국문은 기존처럼 마침표 뒤 강제 줄바꿈 유지
         formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
         
     lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
@@ -104,6 +110,7 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
     height = (total_visual_lines * 10) + 10
     return final_text, height
 
+# [수정] 모드 파라미터 전달받도록 수정
 def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
     unique_codes = []; seen = set()
     for c in codes:
@@ -116,7 +123,10 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
             code = unique_codes[i]
             desc = get_description_smart(code, code_map)
             ws.row_dimensions[current_row].hidden = False
+            
+            # [수정] 높이 계산 시 mode 전달
             final_height = calculate_smart_height_basic(desc, mode)
+            
             ws.row_dimensions[current_row].height = final_height
             safe_write_force(ws, current_row, 2, code, center=False)
             safe_write_force(ws, current_row, 4, desc, center=False)
@@ -413,7 +423,7 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
         garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 방법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제", "- 색", "(및 부적절한) 소화제", "특정 유해성", "보호하기 위해 필요한 조치 사항 및 보호구", "저장 방법"]
         sensitive_garbage_regex = [r"^시\s+", r"^또는\s+", r"^의\s+"]
     else: 
-        garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 방법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제"]
+        garbage_heads = ["에 접촉했을 때", "에 들어갔을 때", "들어갔을 때", "접촉했을 때", "했을 때", "흡입했을 때", "먹었을 때", "주의사항", "내용물", "취급요령", "저장방법", "보호구", "조치사항", "제거 방법", "소화제", "유해성", "로부터 생기는", "착용할 보호구", "예방조치", "방법", "경고표지 항목", "그림문자", "화학물질", "의사의 주의사항", "기타 의사의 주의사항", "필요한 정보", "관한 정보", "보호하기 위해 필요한 조치사항", "또는 제거 정법", "시 착용할 보호구 및 예방조치", "시 착용할 보호구", "부터 생기는 특정 유해성", "사의 주의사항", "(부적절한) 소화제", "및", "요령", "때", "항의", "색상", "인화점", "비중", "굴절률", "에 의한 규제", "의한 규제"]
         sensitive_garbage_regex = [r"^시\s+", r"^또는\s+", r"^의\s+"]
 
     cleaned_lines = []
@@ -574,7 +584,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                     m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_after_cas)
                     if m_range:
                         s, e = m_range.group(1), m_range.group(2)
-                        # 소수점 제외 조건 제거: HP(E)도 소수점 허용
                         if float(s) <= 100 and float(e) <= 100:
                             if s == "1": s = "0"
                             cn_val = f"{s} ~ {e}"
@@ -915,7 +924,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                     cn_val = f"{s} ~ {e}"
             
             if c_val or cn_val:
-                if "." in cn_val: continue
                 result["composition_data"].append((c_val, cn_val))
 
     data = {}
@@ -1022,35 +1030,34 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 # --------------------------------------------------------------------------
 # [4. 메인 실행 구역]
 # --------------------------------------------------------------------------
-with st.expander("📂 파일 업로드", expanded=True):
+with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
         master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
         loaded_refs, folder_exists = get_reference_images()
         if folder_exists and loaded_refs:
-            st.success(f"✅ 신호어 이미지 {len(loaded_refs)}개 로드됨")
+            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
         elif not folder_exists:
             st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
     with col2:
-        template_file = st.file_uploader("양식 파일 (GHS MSDS 양식)", type="xlsx")
+        template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
 
 product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 st.write("") 
 
-# [추가] HP(E), CFF(E)일 때만 국문 엑셀 업로드 UI 표시
 kor_excel_file = None
-kor_form_version = "신버전"
+kor_form_version = "신버전 (코드 B25~, 물질 80~122행)"
 
 if option in ["CFF(E)", "HP(E)"]:
     st.markdown("---")
-    st.markdown("💡 **영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
+    st.markdown("💡 **(선택) 영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
     c3, c4 = st.columns(2)
     with c3:
-        kor_excel_file = st.file_uploader("국문 엑셀 파일", type="xlsx")
+        kor_excel_file = st.file_uploader("3. 국문 엑셀 파일 (선택)", type="xlsx")
     with c4:
-        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (바뀐 양식)", "구버전 (기존 양식)"])
+        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~60, 물질 61~103행)"])
 
 col_left, col_center, col_right = st.columns([4, 2, 4])
 
@@ -1059,7 +1066,7 @@ if 'converted_files' not in st.session_state:
     st.session_state['download_data'] = {}
 
 with col_left:
-    st.subheader("원본 파일 업로드")
+    st.subheader("3. 원본 파일 업로드")
     uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
 
 with col_center:
@@ -1140,7 +1147,6 @@ with col_center:
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
 
-                # [추가] 영문 양식 생성 시, 국문 엑셀 파일이 존재하면 데이터를 추출하여 덮어씌움
                 kor_override_data = None
                 if option in ["CFF(E)", "HP(E)"] and kor_excel_file is not None:
                     kor_excel_file.seek(0)
@@ -1195,7 +1201,6 @@ with col_center:
                         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
                         parsed_data = parse_pdf_final(doc, mode=option)
                         
-                        # [적용] 추출된 국문 엑셀 데이터로 PDF 파싱 데이터를 덮어쓰기
                         if option in ["CFF(E)", "HP(E)"] and kor_override_data:
                             parsed_data["h_codes"] = kor_override_data["h_codes"]
                             parsed_data["p_prev"] = kor_override_data["p_prev"]
@@ -1337,7 +1342,7 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B22')
 
                         elif option == "CFF(E)":
                             dest_ws['A50'].alignment = ALIGN_LEFT
@@ -1571,15 +1576,11 @@ with col_center:
                             
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
-
-                            s15 = parsed_data["sec15"]
-                            if option == "CFF(K)":
-                                safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
+                            safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
 
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                        # [HP(K) 이미지 복원: 과거 코드 로직 적용]
                         if option in ["CFF(K)", "HP(K)"]:
                             collected_pil_images = []
                             page = doc[0]
@@ -1622,8 +1623,7 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                # CFF(E)는 B22, 나머지는 B23
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B23') 
 
                         dest_wb.external_links = []
                         output = io.BytesIO()
@@ -1666,4 +1666,3 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
-
