@@ -61,15 +61,14 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        # [수정] 영문 H/P 코드 한 줄 제한 58자로 설정 (유저 예시 기반 보정)
-        char_limit = 58.0
+        # [완벽 보완] 영문 H/P 코드 한 줄 제한 50자로 설정 및 요청하신 높이 하드코딩
+        char_limit = 50.0
         for line in lines:
             if len(line) == 0:
                 total_visual_lines += 1
             else:
                 total_visual_lines += math.ceil(len(line) / char_limit)
                 
-        # [수정] 줄 수에 따른 명시적 높이 지정
         if total_visual_lines <= 1: 
             return 18.75
         elif total_visual_lines == 2: 
@@ -103,13 +102,16 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
     
     if "E" in mode:
-        # [수정] CFF(E) 모드는 extract_section_smart에서 이미 줄바꿈이 정상 처리되므로 그대로 사용
-        formatted_text = text
+        # [완벽 보완] 마침표가 없더라도 쉼표 뒤가 아니면 특정 지시어에서 무조건 줄바꿈
+        keywords = r"(IF|If|Get|When|Wash|Remove|Take|Prevent|Call|Move|Settle|Please|After|Should|Rescuer|For|Do|Wipe|Follow|Stop|Collect|Make|Absorb|Put|Since|Contaminated|Without|Empty|Keep|Store|The|It|Some|During|Containers)"
+        formatted_text = re.sub(r'(?<=[a-z0-9\)\]\.\;])\s+(' + keywords + r'\b)', r'\n\1', text)
+        formatted_text = re.sub(r'\.([A-Z])', r'.\n\1', formatted_text)
+        
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
         final_text = "\n".join(lines)
         
-        # [수정] 영문 Sec 4~8 글자 수 한도 및 높이 공식 (한 줄당 12, 최소 24)
-        char_limit_per_line = 75.0
+        # [완벽 보완] 영문 Sec 4~8 한 줄당 높이 12.0 (한 줄당 약 73자 기준)
+        char_limit_per_line = 73.0
         total_visual_lines = 0
         for line in lines:
             visual_lines = math.ceil(len(line) / char_limit_per_line)
@@ -118,7 +120,11 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
             
         if total_visual_lines == 0: total_visual_lines = 1
         height = total_visual_lines * 12.0
+        
+        # 최소 1줄의 여유 공간을 위해 24.0 (2줄 높이)을 최하한선으로 둘지 여부 (일단 높이 12.0 적용)
+        # 만약 글이 너무 좁아지면 아래 코드가 24.0으로 방어해줍니다.
         if height < 24.0: height = 24.0
+        
         return final_text, height
     else:
         formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
@@ -486,14 +492,14 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
             if mode == "CFF(E)":
-                # [수정] CFF(E) 모드의 무분별한 문장 병합 방지를 위해 PDF 줄 간격(gap) 기반으로 인식 수정
                 prev_txt = prev['text'].strip()
                 curr_txt = curr['text'].strip()
                 
+                ends_with_punctuation = re.search(r'[\.:;!]$', prev_txt)
                 starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.)", curr_txt)
-                gap = curr['global_y0'] - prev['global_y1']
+                starts_with_cap = re.match(r"^[A-Z]", curr_txt)
                 
-                if starts_with_bullet or gap >= 3.0:
+                if starts_with_bullet or (starts_with_cap and ends_with_punctuation):
                     final_text += "\n" + curr_txt
                 else:
                     final_text += " " + curr_txt
@@ -1117,68 +1123,72 @@ with col_center:
                 kor_data_map = {} 
                 eng_data_map = {} 
                 
-                # [수정] 중앙 데이터 로드 부분: IndexError 완벽 차단 및 파일 포인터 에러 해결
+                # [완벽 보완] 중앙 데이터 로드 부분을 가장 처음 성공했던 원본 로직으로 완벽하게 복구했습니다.
+                # (파일 끊김 방지를 위해 io.BytesIO(file_bytes)만 사용)
                 try:
-                    xls = pd.ExcelFile(master_data_file)
+                    file_bytes = master_data_file.getvalue()
+                    xls = pd.ExcelFile(io.BytesIO(file_bytes))
                     
                     target_sheet = None
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
                     
                     if target_sheet:
-                        df_code = pd.read_excel(xls, sheet_name=target_sheet)
-                        target_col_idx = 1 if "K" in option else 2
+                        df_code = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet)
+                        if "K" in option:
+                            target_col_idx = 1
+                        else:
+                            target_col_idx = 2
                         
                         for _, row in df_code.iterrows():
                             if pd.notna(row.iloc[0]):
                                 code_key = str(row.iloc[0]).replace(" ","").upper().strip()
                                 if len(row) > target_col_idx:
                                     val = row.iloc[target_col_idx]
-                                    code_map[code_key] = str(val).strip() if pd.notna(val) else ""
+                                    code_val = str(val).strip() if pd.notna(val) else ""
+                                    code_map[code_key] = code_val
                     
                     if "K" in option:
                         sheet_kor = None
                         for sheet in xls.sheet_names:
                             if "국문" in sheet: sheet_kor = sheet; break
                         if sheet_kor:
-                            df_kor = pd.read_excel(xls, sheet_name=sheet_kor)
+                            df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
                             for _, row in df_kor.iterrows():
-                                if pd.notna(row.iloc[0]):
-                                    c = str(row.iloc[0]).replace(" ", "").strip()
-                                    n = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
-                                    cas_name_map[c] = n
-                                    if n:
-                                        kor_data_map[n] = {
-                                            'F': row.iloc[5] if len(row) > 5 else "", 
-                                            'G': row.iloc[6] if len(row) > 6 else "", 
-                                            'H': row.iloc[7] if len(row) > 7 else "",
-                                            'P': row.iloc[15] if len(row) > 15 else "", 
-                                            'T': row.iloc[19] if len(row) > 19 else "", 
-                                            'U': row.iloc[20] if len(row) > 20 else "", 
-                                            'V': row.iloc[21] if len(row) > 21 else ""
-                                        }
+                                try:
+                                    val_cas = row.iloc[0]
+                                    val_name = row.iloc[1]
+                                    if pd.notna(val_cas):
+                                        c = str(val_cas).replace(" ", "").strip()
+                                        n = str(val_name).strip() if pd.notna(val_name) else ""
+                                        cas_name_map[c] = n
+                                        if n:
+                                            kor_data_map[n] = {
+                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                                'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                            }
+                                except Exception: pass
                     else: # E 모드 (CFF E 등)
                         sheet_eng = None
                         for sheet in xls.sheet_names:
                             if "영문" in sheet: sheet_eng = sheet; break
                         if sheet_eng:
-                            df_eng = pd.read_excel(xls, sheet_name=sheet_eng)
+                            df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
                             for _, row in df_eng.iterrows():
-                                if pd.notna(row.iloc[0]):
-                                    c = str(row.iloc[0]).replace(" ", "").strip()
-                                    n = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
-                                    cas_name_map[c] = n
-                                    if n:
-                                        eng_data_map[n] = {
-                                            'F': row.iloc[5] if len(row) > 5 else "", 
-                                            'G': row.iloc[6] if len(row) > 6 else "", 
-                                            'H': row.iloc[7] if len(row) > 7 else "",
-                                            'P': row.iloc[15] if len(row) > 15 else "", 
-                                            'Q': row.iloc[16] if len(row) > 16 else "", 
-                                            'T': row.iloc[19] if len(row) > 19 else "", 
-                                            'U': row.iloc[20] if len(row) > 20 else "", 
-                                            'V': row.iloc[21] if len(row) > 21 else ""
-                                        }
+                                try:
+                                    val_cas = row.iloc[0]
+                                    val_name = row.iloc[1]
+                                    if pd.notna(val_cas):
+                                        c = str(val_cas).replace(" ", "").strip()
+                                        n = str(val_name).strip() if pd.notna(val_name) else ""
+                                        cas_name_map[c] = n
+                                        if n:
+                                            eng_data_map[n] = {
+                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                                'P': row.iloc[15], 'Q': row.iloc[16], 
+                                                'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                            }
+                                except Exception: pass
 
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
