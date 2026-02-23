@@ -680,10 +680,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 
     if mode == "CFF(E)":
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
-        
-        # [수정] "Category 숫자" 뒤에 줄바꿈 문자 추가
-        hazard_cls_text = re.sub(r'(Category\s*\d+[A-Za-z]?)', r'\1\n', hazard_cls_text)
-        
         hazard_cls_lines = []
         for line in hazard_cls_text.split('\n'):
             line = line.strip()
@@ -874,7 +870,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P5"): result["p_disp"].append(code)
 
     regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
-    # [수정] CFF(K) CAS 번호 인식 개선 (EC 번호 등과 혼동 방지)
     regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     regex_cas_ec_kill = re.compile(r'\b\d{2,7}\s*-\s*\d{2,3}\s*-\s*\d\b')
     regex_tilde_range = re.compile(r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)') 
@@ -907,18 +902,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                                 if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
                             except: pass
             else:
-                # [수정] CFF(K)에서도 엄격한 CAS 정규식 사용
                 cas_found = regex_cas_strict.findall(txt)
                 if cas_found:
-                    # 엄격한 CAS 형식이면 바로 채택
                     c_val = cas_found[0].replace(" ", "")
-                else:
-                    # 실패 시 기존 방식 시도 (하지만 EC 번호가 걸릴 수 있음)
-                    cas_found_loose = regex_cas_ec_kill.findall(txt)
-                    if cas_found_loose:
-                        potential_cas = cas_found_loose[0].replace(" ", "")
-                        if re.match(r'\d{2,7}-\d{2}-\d', potential_cas): c_val = potential_cas
-                
                 txt_clean = regex_cas_ec_kill.sub(" ", txt)
                 m_tilde = regex_tilde_range.search(txt_clean)
                 if m_tilde:
@@ -1087,9 +1073,7 @@ with col_center:
                 kor_data_map = {} 
                 eng_data_map = {} 
                 
-                # [수정 시작] CFF(K) 구조를 바탕으로 에러에 강건한 데이터 끌어오기 방식 적용
                 try:
-                    master_data_file.seek(0)
                     xls = pd.ExcelFile(master_data_file)
                     
                     target_sheet = None
@@ -1097,73 +1081,60 @@ with col_center:
                         if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
                     
                     if target_sheet:
-                        df_code = pd.read_excel(xls, sheet_name=target_sheet)
-                        target_col_idx = 1 if "K" in option else 2
+                        df_code = pd.read_excel(master_data_file, sheet_name=target_sheet)
+                        if "K" in option:
+                            target_col_idx = 1
+                        else:
+                            target_col_idx = 2
                         
                         for _, row in df_code.iterrows():
-                            try:
-                                if pd.notna(row.iloc[0]):
-                                    code_key = str(row.iloc[0]).replace(" ","").upper().strip()
-                                    val = row.iloc[target_col_idx] if len(row) > target_col_idx else ""
+                            if pd.notna(row.iloc[0]):
+                                code_key = str(row.iloc[0]).replace(" ","").upper().strip()
+                                if len(row) > target_col_idx:
+                                    val = row.iloc[target_col_idx]
                                     code_val = str(val).strip() if pd.notna(val) else ""
-                                    if code_val and code_val != "nan": code_map[code_key] = code_val
-                            except: pass
+                                    code_map[code_key] = code_val
                     
                     if "K" in option:
                         sheet_kor = None
                         for sheet in xls.sheet_names:
                             if "국문" in sheet: sheet_kor = sheet; break
                         if sheet_kor:
-                            df_kor = pd.read_excel(xls, sheet_name=sheet_kor)
+                            df_kor = pd.read_excel(master_data_file, sheet_name=sheet_kor)
                             for _, row in df_kor.iterrows():
-                                try:
-                                    val_cas = row.iloc[0]
-                                    val_name = row.iloc[1]
-                                    if pd.notna(val_cas):
-                                        c = str(val_cas).replace(" ", "").strip()
-                                        n = str(val_name).strip() if pd.notna(val_name) else ""
-                                        cas_name_map[c] = n
-                                        if n:
-                                            kor_data_map[n] = {
-                                                'F': row.iloc[5] if len(row) > 5 else "", 
-                                                'G': row.iloc[6] if len(row) > 6 else "", 
-                                                'H': row.iloc[7] if len(row) > 7 else "",
-                                                'P': row.iloc[15] if len(row) > 15 else "", 
-                                                'T': row.iloc[19] if len(row) > 19 else "", 
-                                                'U': row.iloc[20] if len(row) > 20 else "", 
-                                                'V': row.iloc[21] if len(row) > 21 else ""
-                                            }
-                                except: pass
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                    cas_name_map[c] = n
+                                    if n:
+                                        kor_data_map[n] = {
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                        }
                     else: # E 모드 (CFF E 등)
                         sheet_eng = None
                         for sheet in xls.sheet_names:
                             if "영문" in sheet: sheet_eng = sheet; break
                         if sheet_eng:
-                            df_eng = pd.read_excel(xls, sheet_name=sheet_eng)
+                            df_eng = pd.read_excel(master_data_file, sheet_name=sheet_eng)
                             for _, row in df_eng.iterrows():
-                                try:
-                                    val_cas = row.iloc[0]
-                                    val_name = row.iloc[1]
-                                    if pd.notna(val_cas):
-                                        c = str(val_cas).replace(" ", "").strip()
-                                        n = str(val_name).strip() if pd.notna(val_name) else ""
-                                        cas_name_map[c] = n
-                                        if n:
-                                            eng_data_map[n] = {
-                                                'F': row.iloc[5] if len(row) > 5 else "", 
-                                                'G': row.iloc[6] if len(row) > 6 else "", 
-                                                'H': row.iloc[7] if len(row) > 7 else "",
-                                                'P': row.iloc[15] if len(row) > 15 else "", 
-                                                'Q': row.iloc[16] if len(row) > 16 else "", 
-                                                'T': row.iloc[19] if len(row) > 19 else "", 
-                                                'U': row.iloc[20] if len(row) > 20 else "", 
-                                                'V': row.iloc[21] if len(row) > 21 else ""
-                                            }
-                                except: pass
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                    cas_name_map[c] = n
+                                    if n:
+                                        eng_data_map[n] = {
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'Q': row.iloc[16], 
+                                            'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                        }
 
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
-                # [수정 끝]
 
                 kor_override_data = None
                 if option in ["CFF(E)", "HP(E)"] and kor_excel_file is not None:
@@ -1320,48 +1291,6 @@ with col_center:
                             today_eng = datetime.now().strftime("%d. %b. %Y").upper()
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
 
-                            collected_pil_images = []
-                            page = doc[0]
-                            image_list = doc.get_page_images(0)
-                            
-                            for img_info in image_list:
-                                xref = img_info[0]
-                                try:
-                                    base_image = doc.extract_image(xref)
-                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                    
-                                    if is_blue_dominant(pil_img): continue
-                                    w, h = pil_img.size
-                                    if not is_square_shaped(w, h): continue
-
-                                    if loaded_refs:
-                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode="HP(K)")
-                                        if matched_name:
-                                            clean_img = loaded_refs[matched_name]
-                                            collected_pil_images.append((extract_number(matched_name), clean_img))
-                                except: continue
-                            
-                            unique_images = {}
-                            for key, img in collected_pil_images:
-                                if key not in unique_images: unique_images[key] = img
-                            
-                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
-
-                            if final_sorted_imgs:
-                                unit_size = 67; icon_size = 60
-                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                                total_width = unit_size * len(final_sorted_imgs)
-                                total_height = unit_size
-                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                for idx, p_img in enumerate(final_sorted_imgs):
-                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
-                                
-                                img_byte_arr = io.BytesIO()
-                                merged_img.save(img_byte_arr, format='PNG')
-                                img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
-
                         elif option == "CFF(E)":
                             dest_ws['A50'].alignment = ALIGN_LEFT
                             dest_ws['A64'].alignment = ALIGN_LEFT
@@ -1450,44 +1379,6 @@ with col_center:
 
                             today_eng = datetime.now().strftime("%d. %b. %Y")
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
-                            
-                            collected_pil_images = []
-                            page = doc[0]
-                            image_list = doc.get_page_images(0)
-                            
-                            for img_info in image_list:
-                                xref = img_info[0]
-                                try:
-                                    base_image = doc.extract_image(xref)
-                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                    
-                                    if loaded_refs:
-                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
-                                        if matched_name:
-                                            clean_img = loaded_refs[matched_name]
-                                            collected_pil_images.append((extract_number(matched_name), clean_img))
-                                except: continue
-                            
-                            unique_images = {}
-                            for key, img in collected_pil_images:
-                                if key not in unique_images: unique_images[key] = img
-                            
-                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
-
-                            if final_sorted_imgs:
-                                unit_size = 67; icon_size = 60
-                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                                total_width = unit_size * len(final_sorted_imgs)
-                                total_height = unit_size
-                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                for idx, p_img in enumerate(final_sorted_imgs):
-                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
-                                
-                                img_byte_arr = io.BytesIO()
-                                merged_img.save(img_byte_arr, format='PNG')
-                                img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
 
                         else: # CFF(K) / HP(K)
                             safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
@@ -1594,15 +1485,12 @@ with col_center:
                             
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
-
-                            s15 = parsed_data["sec15"]
-                            if option == "CFF(K)":
-                                safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
+                            safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
 
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                        # [HP(K) 이미지 복원: 과거 코드 로직 적용]
+                        # [추가] CFF(E) 모드에도 이미지 삽입 적용 (B22 셀)
                         if option in ["CFF(K)", "HP(K)", "CFF(E)"]:
                             collected_pil_images = []
                             page = doc[0]
@@ -1620,6 +1508,8 @@ with col_center:
                                         if not is_square_shaped(w, h): continue
 
                                     if loaded_refs:
+                                        # find_best_match_name 함수 내부에 CFF(E) 처리 로직이 없었으나,
+                                        # mode="CFF(K)" 파라미터를 그대로 넘기면 CFF 방식의 필터링을 타게 됩니다.
                                         matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
                                         if matched_name:
                                             clean_img = loaded_refs[matched_name]
@@ -1645,7 +1535,6 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                # CFF(E)는 B22, 나머지는 B23
                                 dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
