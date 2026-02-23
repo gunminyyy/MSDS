@@ -574,16 +574,15 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                     m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_after_cas)
                     if m_range:
                         s, e = m_range.group(1), m_range.group(2)
-                        if "." not in s and "." not in e:
-                            if float(s) <= 100 and float(e) <= 100:
-                                if s == "1": s = "0"
-                                cn_val = f"{s} ~ {e}"
+                        if float(s) <= 100 and float(e) <= 100:
+                            if s == "1": s = "0"
+                            cn_val = f"{s} ~ {e}"
                     else:
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_after_cas)
                         if m_single:
                             try:
                                 v = m_single.group(1)
-                                if "." not in v and float(v) <= 100: 
+                                if float(v) <= 100: 
                                     cn_val = v
                             except: pass
                             
@@ -662,7 +661,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["sec9"] = s9
 
         s14 = {}
-        # [수정] CFF(K)/HP(K)와 동일하게 운송 위험성 등급(CLASS) 파싱 추가
         un_raw = extract_section_smart(all_lines, "UN No.", "Proper shipping name", mode)
         s14["UN"] = re.sub(r'\D', '', un_raw)
         
@@ -671,9 +669,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         name_cln = re.sub(r'(?i)shipping\s*name', '', name_cln)
         s14["NAME"] = re.sub(r'\([^)]*\)', '', name_cln).replace("-", "").strip()
         
-        # 클래스(위험성 등급) 추출 로직 (B514용)
-        # HP(K)/CFF(K)에서는 "다. 운송에서의 위험성 등급" ~ "라. 용기등급" 사이를 추출했음.
-        # HP(E)에서는 "Hazard Class" ~ "Packing group" 사이를 추출.
         class_raw = extract_section_smart(all_lines, "Hazard Class", "Packing group", mode)
         class_match = re.search(r'(\d)', class_raw)
         s14["CLASS"] = class_match.group(1) if class_match else ""
@@ -1224,6 +1219,7 @@ with col_center:
                             s14 = parsed_data["sec14"]
                             safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
                             safe_write_force(dest_ws, 532, 2, s14["NAME"], center=False)
+                            safe_write_force(dest_ws, 533, 2, s14.get("CLASS", ""), center=False)
 
                             today_eng = datetime.now().strftime("%d. %b. %Y").upper()
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
