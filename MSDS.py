@@ -103,14 +103,12 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
     
     if "E" in mode:
-        # [수정] 마침표가 없더라도 새로운 문장 시작을 나타내는 키워드 앞에서 줄바꿈
-        formatted_text = re.sub(r'(?<=[a-z0-9\.\,\;\)])\s+(IF\b|If\b|Get\b|When\b|Wash\b|Remove\b|Take\b|Prevent\b|Call\b|Rinse\b|Soak\b)', r'\n\1', text)
-        formatted_text = re.sub(r'(?<!\d)\.\s+([A-Z])', r'.\n\1', formatted_text)
-        
+        # [수정] CFF(E) 모드는 extract_section_smart에서 이미 줄바꿈이 정상 처리되므로 그대로 사용
+        formatted_text = text
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
         final_text = "\n".join(lines)
         
-        # [수정] 영문 Sec 4~8 글자 수 한도 및 높이 공식 (한 줄당 12)
+        # [수정] 영문 Sec 4~8 글자 수 한도 및 높이 공식 (한 줄당 12, 최소 24)
         char_limit_per_line = 75.0
         total_visual_lines = 0
         for line in lines:
@@ -121,11 +119,9 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         if total_visual_lines == 0: total_visual_lines = 1
         height = total_visual_lines * 12.0
         if height < 24.0: height = 24.0
-        
         return final_text, height
     else:
         formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
-        
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
         final_text = "\n".join(lines)
         
@@ -490,14 +486,14 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
             if mode == "CFF(E)":
+                # [수정] CFF(E) 모드의 무분별한 문장 병합 방지를 위해 PDF 줄 간격(gap) 기반으로 인식 수정
                 prev_txt = prev['text'].strip()
                 curr_txt = curr['text'].strip()
                 
-                ends_with_punctuation = re.search(r'[\.:;!]$', prev_txt)
                 starts_with_bullet = re.match(r"^(\-|•|\*|\d+\.)", curr_txt)
-                starts_with_cap = re.match(r"^[A-Z]", curr_txt)
+                gap = curr['global_y0'] - prev['global_y1']
                 
-                if starts_with_bullet or (starts_with_cap and ends_with_punctuation):
+                if starts_with_bullet or gap >= 3.0:
                     final_text += "\n" + curr_txt
                 else:
                     final_text += " " + curr_txt
@@ -1121,66 +1117,68 @@ with col_center:
                 kor_data_map = {} 
                 eng_data_map = {} 
                 
+                # [수정] 중앙 데이터 로드 부분: IndexError 완벽 차단 및 파일 포인터 에러 해결
                 try:
-                    file_bytes = master_data_file.getvalue()
-                    xls = pd.ExcelFile(io.BytesIO(file_bytes))
+                    xls = pd.ExcelFile(master_data_file)
                     
                     target_sheet = None
                     for sheet in xls.sheet_names:
                         if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
                     
                     if target_sheet:
-                        df_code = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet)
-                        if "K" in option:
-                            target_col_idx = 1
-                        else:
-                            target_col_idx = 2
+                        df_code = pd.read_excel(xls, sheet_name=target_sheet)
+                        target_col_idx = 1 if "K" in option else 2
                         
                         for _, row in df_code.iterrows():
                             if pd.notna(row.iloc[0]):
                                 code_key = str(row.iloc[0]).replace(" ","").upper().strip()
                                 if len(row) > target_col_idx:
                                     val = row.iloc[target_col_idx]
-                                    code_val = str(val).strip() if pd.notna(val) else ""
-                                    code_map[code_key] = code_val
+                                    code_map[code_key] = str(val).strip() if pd.notna(val) else ""
                     
-                        if "K" in option:
-                            sheet_kor = None
-                            for sheet in xls.sheet_names:
-                                if "국문" in sheet: sheet_kor = sheet; break
-                            if sheet_kor:
-                                df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
-                                for _, row in df_kor.iterrows():
-                                    val_cas = row.iloc[0]
-                                    val_name = row.iloc[1]
-                                    if pd.notna(val_cas):
-                                        c = str(val_cas).replace(" ", "").strip()
-                                        n = str(val_name).strip() if pd.notna(val_name) else ""
-                                        cas_name_map[c] = n
-                                        if n:
-                                            kor_data_map[n] = {
-                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                                'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                            }
-                        else: # E 모드 (CFF E 등)
-                            sheet_eng = None
-                            for sheet in xls.sheet_names:
-                                if "영문" in sheet: sheet_eng = sheet; break
-                            if sheet_eng:
-                                df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
-                                for _, row in df_eng.iterrows():
-                                    val_cas = row.iloc[0]
-                                    val_name = row.iloc[1]
-                                    if pd.notna(val_cas):
-                                        c = str(val_cas).replace(" ", "").strip()
-                                        n = str(val_name).strip() if pd.notna(val_name) else ""
-                                        cas_name_map[c] = n
-                                        if n:
-                                            eng_data_map[n] = {
-                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                                'P': row.iloc[15], 'Q': row.iloc[16], 
-                                                'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                            }
+                    if "K" in option:
+                        sheet_kor = None
+                        for sheet in xls.sheet_names:
+                            if "국문" in sheet: sheet_kor = sheet; break
+                        if sheet_kor:
+                            df_kor = pd.read_excel(xls, sheet_name=sheet_kor)
+                            for _, row in df_kor.iterrows():
+                                if pd.notna(row.iloc[0]):
+                                    c = str(row.iloc[0]).replace(" ", "").strip()
+                                    n = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
+                                    cas_name_map[c] = n
+                                    if n:
+                                        kor_data_map[n] = {
+                                            'F': row.iloc[5] if len(row) > 5 else "", 
+                                            'G': row.iloc[6] if len(row) > 6 else "", 
+                                            'H': row.iloc[7] if len(row) > 7 else "",
+                                            'P': row.iloc[15] if len(row) > 15 else "", 
+                                            'T': row.iloc[19] if len(row) > 19 else "", 
+                                            'U': row.iloc[20] if len(row) > 20 else "", 
+                                            'V': row.iloc[21] if len(row) > 21 else ""
+                                        }
+                    else: # E 모드 (CFF E 등)
+                        sheet_eng = None
+                        for sheet in xls.sheet_names:
+                            if "영문" in sheet: sheet_eng = sheet; break
+                        if sheet_eng:
+                            df_eng = pd.read_excel(xls, sheet_name=sheet_eng)
+                            for _, row in df_eng.iterrows():
+                                if pd.notna(row.iloc[0]):
+                                    c = str(row.iloc[0]).replace(" ", "").strip()
+                                    n = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
+                                    cas_name_map[c] = n
+                                    if n:
+                                        eng_data_map[n] = {
+                                            'F': row.iloc[5] if len(row) > 5 else "", 
+                                            'G': row.iloc[6] if len(row) > 6 else "", 
+                                            'H': row.iloc[7] if len(row) > 7 else "",
+                                            'P': row.iloc[15] if len(row) > 15 else "", 
+                                            'Q': row.iloc[16] if len(row) > 16 else "", 
+                                            'T': row.iloc[19] if len(row) > 19 else "", 
+                                            'U': row.iloc[20] if len(row) > 20 else "", 
+                                            'V': row.iloc[21] if len(row) > 21 else ""
+                                        }
 
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
