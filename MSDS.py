@@ -61,50 +61,87 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        # [수정] 영문 H/P 코드 행 높이 민감도 조정 (70 -> 50)
-        char_limit = 50.0
+        # [수정] 영문 H/P 코드 한 줄 제한 58자로 설정 (유저 예시 기반 보정)
+        char_limit = 58.0
+        for line in lines:
+            if len(line) == 0:
+                total_visual_lines += 1
+            else:
+                total_visual_lines += math.ceil(len(line) / char_limit)
+                
+        # [수정] 줄 수에 따른 명시적 높이 지정
+        if total_visual_lines <= 1: 
+            return 18.75
+        elif total_visual_lines == 2: 
+            return 25.5
+        elif total_visual_lines == 3: 
+            return 36.0
+        elif total_visual_lines == 4: 
+            return 44.0
+        elif total_visual_lines == 5: 
+            return 54.0
+        else: 
+            return 64.0 + (total_visual_lines - 6) * 10.0
     else:
         char_limit = 45.0
-    
-    for line in lines:
-        if len(line) == 0:
-            total_visual_lines += 1
-        else:
-            total_visual_lines += math.ceil(len(line) / char_limit)
-            
-    if total_visual_lines <= 1: 
-        return 19.2
-    elif total_visual_lines == 2: 
-        return 26.0
-    elif total_visual_lines == 3: 
-        return 36.0
-    else: 
-        return 45.0
+        for line in lines:
+            if len(line) == 0:
+                total_visual_lines += 1
+            else:
+                total_visual_lines += math.ceil(len(line) / char_limit)
+                
+        if total_visual_lines <= 1: 
+            return 19.2
+        elif total_visual_lines == 2: 
+            return 26.0
+        elif total_visual_lines == 3: 
+            return 36.0
+        else: 
+            return 45.0
 
 def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
     
     if "E" in mode:
-        # [수정] 영문(E) 모드에서도 마침표 뒤 줄바꿈 적용 (문장 구분을 위해)
-        formatted_text = re.sub(r'(?<!\d)\.\s+([A-Z])', r'.\n\1', text)
+        # [수정] 마침표가 없더라도 새로운 문장 시작을 나타내는 키워드 앞에서 줄바꿈
+        formatted_text = re.sub(r'(?<=[a-z0-9\.\,\;\)])\s+(IF\b|If\b|Get\b|When\b|Wash\b|Remove\b|Take\b|Prevent\b|Call\b|Rinse\b|Soak\b)', r'\n\1', text)
+        formatted_text = re.sub(r'(?<!\d)\.\s+([A-Z])', r'.\n\1', formatted_text)
+        
+        lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
+        final_text = "\n".join(lines)
+        
+        # [수정] 영문 Sec 4~8 글자 수 한도 및 높이 공식 (한 줄당 12)
+        char_limit_per_line = 75.0
+        total_visual_lines = 0
+        for line in lines:
+            visual_lines = math.ceil(len(line) / char_limit_per_line)
+            if visual_lines == 0: visual_lines = 1
+            total_visual_lines += visual_lines
+            
+        if total_visual_lines == 0: total_visual_lines = 1
+        height = total_visual_lines * 12.0
+        if height < 24.0: height = 24.0
+        
+        return final_text, height
     else:
         formatted_text = re.sub(r'(?<!\d)\.(?!\d)(?!\n)', '.\n', text)
         
-    lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
-    final_text = "\n".join(lines)
-    
-    char_limit_per_line = 45
-    total_visual_lines = 0
-    for line in lines:
-        line_len = 0
-        for ch in line:
-            line_len += 2 if '가' <= ch <= '힣' else 1.1 
-        visual_lines = math.ceil(line_len / (char_limit_per_line * 2)) 
-        if visual_lines == 0: visual_lines = 1
-        total_visual_lines += visual_lines
-    if total_visual_lines == 0: total_visual_lines = 1
-    height = (total_visual_lines * 10) + 10
-    return final_text, height
+        lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
+        final_text = "\n".join(lines)
+        
+        char_limit_per_line = 45
+        total_visual_lines = 0
+        for line in lines:
+            line_len = 0
+            for ch in line:
+                line_len += 2 if '가' <= ch <= '힣' else 1.1 
+            visual_lines = math.ceil(line_len / (char_limit_per_line * 2)) 
+            if visual_lines == 0: visual_lines = 1
+            total_visual_lines += visual_lines
+        if total_visual_lines == 0: total_visual_lines = 1
+        height = (total_visual_lines * 10) + 10
+        if height < 24.0: height = 24.0
+        return final_text, height
 
 def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
     unique_codes = []; seen = set()
@@ -683,7 +720,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     if mode == "CFF(E)":
         hazard_cls_text = extract_section_smart(all_lines, "2. Hazards identification", "2.2 Labelling", mode)
         
-        # [수정] "Category 숫자" 뒤에 줄바꿈 문자 추가
         hazard_cls_text = re.sub(r'(Category\s*\d+[A-Za-z]?)', r'\1\n', hazard_cls_text)
         
         hazard_cls_lines = []
@@ -876,7 +912,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             elif p.startswith("P5"): result["p_disp"].append(code)
 
     regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
-    # [수정] CFF(K) CAS 번호 인식 개선 (EC 번호 등과 혼동 방지)
     regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
     regex_cas_ec_kill = re.compile(r'\b\d{2,7}\s*-\s*\d{2,3}\s*-\s*\d\b')
     regex_tilde_range = re.compile(r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)') 
@@ -909,13 +944,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                                 if float(m_single.group(1)) <= 100: cn_val = m_single.group(1)
                             except: pass
             else:
-                # [수정] CFF(K)에서도 엄격한 CAS 정규식 사용
                 cas_found = regex_cas_strict.findall(txt)
                 if cas_found:
-                    # 엄격한 CAS 형식이면 바로 채택
                     c_val = cas_found[0].replace(" ", "")
                 else:
-                    # 실패 시 기존 방식 시도 (하지만 EC 번호가 걸릴 수 있음)
                     cas_found_loose = regex_cas_ec_kill.findall(txt)
                     if cas_found_loose:
                         potential_cas = cas_found_loose[0].replace(" ", "")
@@ -1406,9 +1438,6 @@ with col_center:
                                 formatted, h = format_and_calc_height_sec47(val, mode=option)
                                 r_idx = int(re.search(r'\d+', addr).group())
                                 safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
-                                
-                                # [수정] 최소 높이 24.0 보장 (CFF(E) Sec 4-8)
-                                if h < 24.0: h = 24.0
                                 dest_ws.row_dimensions[r_idx].height = h
 
                             s8 = parsed_data["sec8"]
@@ -1636,6 +1665,7 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
+                                # CFF(E)는 B22, 나머지는 B23
                                 dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
 
                         dest_wb.external_links = []
