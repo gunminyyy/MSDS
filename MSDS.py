@@ -390,7 +390,6 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
         ]
         sensitive_garbage_regex = []
     elif mode == "HP(E)":
-        # [수정] HP(E) 전용 불필요 제목 필터 리스트 강화
         garbage_heads = [
             "Classification of the substance or mixture", "Classification of the substance or", "mixture",
             "Precautionary statements", "Hazard pictograms", "Signal word", 
@@ -542,7 +541,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["hazard_cls"] = [l.strip() for l in b19_clean.split('\n') if l.strip()]
 
         sig_raw = extract_section_smart(all_lines, "Signal word", "Hazard statement", mode)
-        # [수정] s 제거 및 특수기호/하이픈 강력 제거
         result["signal_word"] = re.sub(r'^(?:[sS]\b)?[\s\-\○•]+', '', sig_raw.strip()).strip()
 
         h_search_text = extract_section_smart(all_lines, "Hazard statement", "Precautionary statement", mode)
@@ -553,8 +551,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["p_stor"] = extract_codes_ordered(extract_section_smart(all_lines, "3) Storage", "4) Disposal", mode))
         result["p_disp"] = extract_codes_ordered(extract_section_smart(all_lines, "4) Disposal", "C. Other hazards", mode))
 
-        # [수정] HP(E) 성분 데이터(Section 3) 추출 방식 (HP(K)의 라인바이라인 로직을 완벽 재현)
-        # 화학물질명에 섞인 숫자(예: Trimethyl-1-)를 배제하기 위해, 라인별로 CAS 번호를 먼저 찾고 주변 범위를 추출함.
+        # [수정] HP(E) 성분 데이터 추출 (CAS 번호 뒷부분 숫자만 함유량으로 인정)
         in_comp = False
         for line in all_lines:
             txt = line['text']
@@ -572,21 +569,21 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 
                 if cas_found:
                     c_val = cas_found[0].replace(" ", "")
-                    # 찾은 CAS를 지워 혼동 방지
-                    txt_no_cas = txt.replace(cas_found[0], " " * len(cas_found[0]))
+                    # CAS 번호의 인덱스를 찾아 그 이후의 텍스트에서만 범위를 찾음
+                    idx = txt.find(cas_found[0])
+                    txt_after_cas = txt[idx + len(cas_found[0]):]
                     
-                    # 함유량 범위 추출 (숫자-숫자 형태)
-                    m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
+                    m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_after_cas)
                     if m_range:
                         s, e = m_range.group(1), m_range.group(2)
-                        # 소수점 있으면 패스
+                        # 소수점이 포함된 범위는 버림
                         if "." not in s and "." not in e:
-                            # EC번호(보통 200대 시작) 등 거르기 위한 안전장치
+                            # 100 초과 숫자는 EC 번호 등으로 간주하여 무시
                             if float(s) <= 100 and float(e) <= 100:
                                 if s == "1": s = "0"
                                 cn_val = f"{s} ~ {e}"
                     else:
-                        m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
+                        m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_after_cas)
                         if m_single:
                             try:
                                 v = m_single.group(1)
@@ -610,21 +607,31 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Inhalation contact", "Ingestion contact", mode)).strip()
         data["B129"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Ingestion contact", "Delayed and", mode)).strip()
 
-        data["B132"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Suitable", "Specific hazards", mode)).strip()
-        data["B134"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Specific hazards arising", "Special protective", mode)).strip()
-        data["B136"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Special protective actions", "6. ACCIDENTAL", mode)).strip()
+        # [수정] HP(E) 전용 불필요 제목 강제 제거 로직 추가
+        b132_raw = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Suitable", "Specific hazards", mode)).strip()
+        data["B132"] = re.sub(r'(?i)^\s*\(unsuitable\)\s*extinguishing\s*media\s*', '', b132_raw).strip()
+        
+        b134_raw = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Specific hazards arising", "Special protective", mode)).strip()
+        data["B134"] = re.sub(r'(?i)^\s*from\s*the\s*chemical\s*', '', b134_raw).strip()
+        
+        b136_raw = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(sec5_lines, "Special protective actions", "6. ACCIDENTAL", mode)).strip()
+        data["B136"] = re.sub(r'(?i)^\s*for\s*firefighters\s*', '', b136_raw).strip()
 
         data["B140"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Personal precautions", "Environmental precautions", mode)).strip()
         data["B142"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Environmental precautions", "Methods and materials", mode)).strip()
         data["B144"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Methods and materials for containment", "7. HANDLING", mode)).strip()
 
-        data["B148"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Precautions for safe", "Conditions for safe", mode)).strip()
-        data["B150"] = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Conditions for safe storage", "8. EXPOSURE", mode)).strip()
+        b148_raw = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Precautions for safe", "Conditions for safe", mode)).strip()
+        data["B148"] = re.sub(r'(?i)^\s*handling\s*', '', b148_raw).strip()
+        
+        b150_raw = re.sub(r'(?m)^\s*-\s*', '', extract_section_smart(all_lines, "Conditions for safe storage", "8. EXPOSURE", mode)).strip()
+        data["B150"] = re.sub(r'(?i)^[\s,]*including\s*any\s*incompatibilities\s*', '', b150_raw).strip()
         
         result["sec4_to_7"] = data
 
-        # [수정] Section 8 B156:158 처리 로직
-        s8_raw = extract_section_smart(all_lines, "ACGIH TLV", "OSHA PEL", mode)
+        # [수정] Section 8 (ACGIH/OSHA) B156:158 처리 로직
+        s8_raw = extract_section_smart(all_lines, "ACGIH", "OSHA", mode)
+        s8_raw = re.sub(r'(?i)^.*TLV\s*', '', s8_raw).strip()
         s8_clean = re.sub(r'[○•\-\*]+', '', s8_raw).strip()
         
         s8 = {}
@@ -872,8 +879,8 @@ def parse_pdf_final(doc, mode="CFF(K)"):
     in_comp = False
     for line in all_lines:
         txt = line['text']
-        if "3." in txt and ("성분" in txt or "Composition" in txt or "COMPOSITION" in txt): in_comp=True; continue
-        if "4." in txt and ("응급" in txt or "First" in txt or "FIRST" in txt): in_comp=False; break
+        if "3." in txt and ("성분" in txt or "Composition" in txt): in_comp=True; continue
+        if "4." in txt and ("응급" in txt or "First" in txt): in_comp=False; break
         if in_comp:
             if re.search(r'^\d+\.\d+', txt): continue 
             
