@@ -184,7 +184,6 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
             safe_write_force(ws, current_row, 2, code, center=False)
             safe_write_force(ws, current_row, 4, desc, center=False)
         else:
-            # [수정] 25, 38, 50, 64, 70행은 데이터가 없어도 숨기지 않고 D열에 "자료없음" 기재
             if "K" in mode and current_row in [25, 38, 50, 64, 70]:
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
@@ -1012,7 +1011,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B129"] = extract_section_smart(all_lines, "마. 기타", ["5.", "폭발"], mode)
         data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
         
-        # [수정] B133 "특정 유해성" 제목 제거
         b133_raw = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
         data["B133"] = re.sub(r'^(특정\s*유해성)\s*', '', b133_raw).strip()
         
@@ -1025,7 +1023,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B129"] = extract_section_smart(all_lines, "바. 기타", ["5.", "폭발"], mode)
         data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
         
-        # [수정] B133 "특정 유해성" 제목 제거
         b133_raw = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
         data["B133"] = re.sub(r'^(특정\s*유해성)\s*', '', b133_raw).strip()
         
@@ -1278,7 +1275,6 @@ with col_center:
                             val = ws.cell(row=r, column=col).value
                             if val:
                                 val_str = str(val).strip().upper()
-                                # [수정] H나 P 뒤에 3자리 숫자가 오는 패턴으로 시작할 때만 정확히 추출
                                 if re.match(r'^[HP]\s?\d{3}', val_str):
                                     matches = regex.findall(val_str.replace(" ", ""))
                                     for m in matches:
@@ -1308,7 +1304,8 @@ with col_center:
                         kor_override_data["p_disp"] = ext_codes(kor_ws, 70, 72)
                         kor_override_data["composition_data"] = ext_comp(kor_ws, 80, 122)
                     else:
-                        all_c = ext_codes(kor_ws, 25, 150)
+                        # [수정] 구버전 H/P 코드는 정확히 25행부터 70행까지만 찾도록 제한
+                        all_c = ext_codes(kor_ws, 25, 70)
                         kor_override_data["h_codes"] = [c for c in all_c if c.startswith('H')]
                         kor_override_data["p_prev"] = [c for c in all_c if c.startswith('P2')]
                         kor_override_data["p_resp"] = [c for c in all_c if c.startswith('P3')]
