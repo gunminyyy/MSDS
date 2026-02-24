@@ -61,7 +61,7 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        char_limit = 50.0
+        char_limit = 62.0
         for line in lines:
             if len(line) == 0:
                 total_visual_lines += 1
@@ -116,6 +116,9 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         keywords = r"(IF|If|Get|When|Wash|Remove|Take|Prevent|Call|Move|Settle|Please|After|Should|Rescuer|For|Do|Wipe|Follow|Stop|Collect|Make|Absorb|Put|Since|Contaminated|Without|Empty|Keep|Store|The|It|Some|During|Containers)"
         formatted_text = re.sub(r'(?<=[a-z0-9\)\]\.\;])\s+(' + keywords + r'\b)', r'\n\1', text)
         formatted_text = re.sub(r'\.([A-Z])', r'.\n\1', formatted_text)
+        
+        # [수정] "Follow Stop" 예외 처리 (줄바꿈 취소)
+        formatted_text = formatted_text.replace("Follow\nStop", "Follow Stop")
         
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
         final_text = "\n".join(lines)
@@ -511,7 +514,6 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
         for i in range(1, len(cleaned_lines)):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
-            # [수정] CFF(E)와 HP(E) 모두에게 엑셀 줄바꿈 시스템 적용 (PDF Gap 기반)
             if mode in ["CFF(E)", "HP(E)"]:
                 prev_txt = prev['text'].strip()
                 curr_txt = curr['text'].strip()
@@ -1169,7 +1171,8 @@ with col_center:
                 eng_data_map = {} 
                 
                 try:
-                    file_bytes = master_data_file.getvalue()
+                    master_data_file.seek(0)
+                    file_bytes = master_data_file.read()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
                     
                     target_sheet = None
