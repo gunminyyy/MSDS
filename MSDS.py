@@ -188,6 +188,11 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
                 safe_write_force(ws, current_row, 4, "자료없음", center=False)
+            # [수정] 영문(E) 모드일 경우 빈칸 처리 및 no data available 기재 추가
+            elif "E" in mode and current_row in [24, 38, 50, 64, 70]:
+                ws.row_dimensions[current_row].hidden = False
+                safe_write_force(ws, current_row, 2, "")
+                safe_write_force(ws, current_row, 4, "no data available", center=False)
             else:
                 ws.row_dimensions[current_row].hidden = True
                 safe_write_force(ws, current_row, 2, "") 
@@ -992,7 +997,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         potential_cas = cas_found_loose[0].replace(" ", "")
                         if re.match(r'\d{2,7}-\d{2}-\d', potential_cas): c_val = potential_cas
                 
-                txt_clean = regex_cas_ec_kill.sub(" ", txt)
+                txt_clean = regex_cas_ec_kill.sub("교 ", txt)
                 m_tilde = regex_tilde_range.search(txt_clean)
                 if m_tilde:
                     s, e = m_tilde.group(1), m_tilde.group(2)
@@ -1272,7 +1277,6 @@ with col_center:
                         res = []
                         regex = re.compile(r"([HP]\d{3}(?:\+[HP]\d{3})*)")
                         for r in range(s_r, e_r + 1):
-                            # [수정] 숨겨진 행에 남아있는 예전 템플릿 코드 쓰레기값 무시
                             if ws.row_dimensions[r].hidden: 
                                 continue
                             val = ws.cell(row=r, column=col).value
@@ -1288,7 +1292,6 @@ with col_center:
                         res = []
                         cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
                         for r in range(s_r, e_r + 1):
-                            # [수정] 숨겨진 행 무시 적용
                             if ws.row_dimensions[r].hidden: 
                                 continue
                             cas = ws.cell(row=r, column=cas_col).value
@@ -1310,7 +1313,6 @@ with col_center:
                         kor_override_data["p_disp"] = ext_codes(kor_ws, 70, 72)
                         kor_override_data["composition_data"] = ext_comp(kor_ws, 80, 122)
                     else:
-                        # [수정] 구버전 H/P 코드는 정확히 25행부터 70행까지만 찾도록 제한
                         all_c = ext_codes(kor_ws, 25, 70)
                         kor_override_data["h_codes"] = [c for c in all_c if c.startswith('H')]
                         kor_override_data["p_prev"] = [c for c in all_c if c.startswith('P2')]
