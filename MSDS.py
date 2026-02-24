@@ -66,7 +66,19 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
             if len(line) == 0:
                 total_visual_lines += 1
             else:
-                total_visual_lines += math.ceil(len(line) / char_limit)
+                words = line.split(" ")
+                current_len = 0
+                lines_for_this_paragraph = 1
+                
+                for word in words:
+                    if current_len == 0:
+                        current_len = len(word)
+                    elif current_len + 1 + len(word) <= char_limit:
+                        current_len += 1 + len(word)
+                    else:
+                        lines_for_this_paragraph += 1
+                        current_len = len(word)
+                total_visual_lines += lines_for_this_paragraph
                 
         if total_visual_lines <= 1: 
             return 18.75
@@ -111,9 +123,22 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         char_limit_per_line = 73.0
         total_visual_lines = 0
         for line in lines:
-            visual_lines = math.ceil(len(line) / char_limit_per_line)
-            if visual_lines == 0: visual_lines = 1
-            total_visual_lines += visual_lines
+            if len(line) == 0:
+                total_visual_lines += 1
+            else:
+                words = line.split(" ")
+                current_len = 0
+                lines_for_this_paragraph = 1
+                
+                for word in words:
+                    if current_len == 0:
+                        current_len = len(word)
+                    elif current_len + 1 + len(word) <= char_limit_per_line:
+                        current_len += 1 + len(word)
+                    else:
+                        lines_for_this_paragraph += 1
+                        current_len = len(word)
+                total_visual_lines += lines_for_this_paragraph
             
         if total_visual_lines == 0: total_visual_lines = 1
         height = total_visual_lines * 12.0
@@ -817,7 +842,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         
         result["sec9"] = s9
 
-        # [수정] CFF(E) 14번 섹션 추출 로직
         s14 = {}
         un_text = extract_section_smart(all_lines, "14.1 UN number", "14.2 Proper", mode)
         s14["UN"] = re.sub(r'\D', '', un_text)
@@ -1031,7 +1055,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"], mode)
         }
 
-    # [수정] CFF(K) 14번 섹션 추출 로직
     sec14_lines = []
     start_14 = -1; end_14 = -1
     for i, line in enumerate(all_lines):
@@ -1139,6 +1162,7 @@ with col_center:
                 kor_data_map = {} 
                 eng_data_map = {} 
                 
+                # [완벽 복원] 어떠한 데이터 건너뜀(Skip)도 발생하지 않는 "순정 원본 로직" 적용
                 try:
                     file_bytes = master_data_file.getvalue()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
@@ -1157,10 +1181,9 @@ with col_center:
                         for _, row in df_code.iterrows():
                             if pd.notna(row.iloc[0]):
                                 code_key = str(row.iloc[0]).replace(" ","").upper().strip()
-                                if len(row) > target_col_idx:
-                                    val = row.iloc[target_col_idx]
-                                    code_val = str(val).strip() if pd.notna(val) else ""
-                                    code_map[code_key] = code_val
+                                val = row.iloc[target_col_idx]
+                                code_val = str(val).strip() if pd.notna(val) else ""
+                                code_map[code_key] = code_val
                     
                     if "K" in option:
                         sheet_kor = None
@@ -1169,19 +1192,17 @@ with col_center:
                         if sheet_kor:
                             df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
                             for _, row in df_kor.iterrows():
-                                try:
-                                    val_cas = row.iloc[0]
-                                    val_name = row.iloc[1]
-                                    if pd.notna(val_cas):
-                                        c = str(val_cas).replace(" ", "").strip()
-                                        n = str(val_name).strip() if pd.notna(val_name) else ""
-                                        cas_name_map[c] = n
-                                        if n:
-                                            kor_data_map[n] = {
-                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                                'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                            }
-                                except Exception: pass
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                    cas_name_map[c] = n
+                                    if n:
+                                        kor_data_map[n] = {
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                        }
                     else: # E 모드 (CFF E 등)
                         sheet_eng = None
                         for sheet in xls.sheet_names:
@@ -1189,20 +1210,18 @@ with col_center:
                         if sheet_eng:
                             df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
                             for _, row in df_eng.iterrows():
-                                try:
-                                    val_cas = row.iloc[0]
-                                    val_name = row.iloc[1]
-                                    if pd.notna(val_cas):
-                                        c = str(val_cas).replace(" ", "").strip()
-                                        n = str(val_name).strip() if pd.notna(val_name) else ""
-                                        cas_name_map[c] = n
-                                        if n:
-                                            eng_data_map[n] = {
-                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                                'P': row.iloc[15], 'Q': row.iloc[16], 
-                                                'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                            }
-                                except Exception: pass
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                    cas_name_map[c] = n
+                                    if n:
+                                        eng_data_map[n] = {
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'Q': row.iloc[16], 
+                                            'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                        }
 
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
@@ -1486,7 +1505,6 @@ with col_center:
                             fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
                             fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
-                            # [추가] CFF(E) 14번 섹션 쓰기 추가
                             s14 = parsed_data["sec14"]
                             safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
                             safe_write_force(dest_ws, 532, 2, s14["NAME"], center=False)
@@ -1641,7 +1659,6 @@ with col_center:
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
 
-                            # [추가] 운송에서의 위험성 등급(CLASS), 용기등급(B515), 환경유해성(B516) 입력
                             safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
                             safe_write_force(dest_ws, 515, 2, s14.get("PG", ""), center=False)
                             safe_write_force(dest_ws, 516, 2, s14.get("ENV", ""), center=False)
