@@ -61,7 +61,8 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        char_limit = 50.0
+        # [최적화] 영문 H/P 코드 한 줄 제한 65.0자로 설정 (유저 예시 기반 완벽 대응)
+        char_limit = 65.0
         for line in lines:
             if len(line) == 0:
                 total_visual_lines += 1
@@ -1170,7 +1171,8 @@ with col_center:
                 eng_data_map = {} 
                 
                 try:
-                    file_bytes = master_data_file.getvalue()
+                    master_data_file.seek(0)
+                    file_bytes = master_data_file.read()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
                     
                     target_sheet = None
@@ -1197,16 +1199,19 @@ with col_center:
                         if sheet_kor:
                             df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
                             for _, row in df_kor.iterrows():
-                                val_cas = row.iloc[0]
-                                val_name = row.iloc[1]
-                                if pd.notna(val_cas):
-                                    c = str(val_cas).replace(" ", "").strip()
-                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                if pd.notna(row.iloc[0]):
+                                    c = str(row.iloc[0]).replace(" ", "").strip()
+                                    n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
                                     cas_name_map[c] = n
                                     if n:
                                         kor_data_map[n] = {
-                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                            'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                            'F': str(row.iloc[5]) if len(row) > 5 else "", 
+                                            'G': str(row.iloc[6]) if len(row) > 6 else "", 
+                                            'H': str(row.iloc[7]) if len(row) > 7 else "",
+                                            'P': str(row.iloc[15]) if len(row) > 15 else "", 
+                                            'T': str(row.iloc[19]) if len(row) > 19 else "", 
+                                            'U': str(row.iloc[20]) if len(row) > 20 else "", 
+                                            'V': str(row.iloc[21]) if len(row) > 21 else ""
                                         }
                     else: # E 모드 (CFF E 등)
                         sheet_eng = None
@@ -1215,17 +1220,20 @@ with col_center:
                         if sheet_eng:
                             df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
                             for _, row in df_eng.iterrows():
-                                val_cas = row.iloc[0]
-                                val_name = row.iloc[1]
-                                if pd.notna(val_cas):
-                                    c = str(val_cas).replace(" ", "").strip()
-                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                if pd.notna(row.iloc[0]):
+                                    c = str(row.iloc[0]).replace(" ", "").strip()
+                                    n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
                                     cas_name_map[c] = n
                                     if n:
                                         eng_data_map[n] = {
-                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                            'P': row.iloc[15], 'Q': row.iloc[16], 
-                                            'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                            'F': str(row.iloc[5]) if len(row) > 5 else "", 
+                                            'G': str(row.iloc[6]) if len(row) > 6 else "", 
+                                            'H': str(row.iloc[7]) if len(row) > 7 else "",
+                                            'P': str(row.iloc[15]) if len(row) > 15 else "", 
+                                            'Q': str(row.iloc[16]) if len(row) > 16 else "", 
+                                            'T': str(row.iloc[19]) if len(row) > 19 else "", 
+                                            'U': str(row.iloc[20]) if len(row) > 20 else "", 
+                                            'V': str(row.iloc[21]) if len(row) > 21 else ""
                                         }
 
                 except Exception as e:
