@@ -1130,6 +1130,11 @@ with st.expander("📂 필수 파일 업로드", expanded=True):
 
 product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
+
+refractive_index_input = ""
+if option in ["HP(K)", "HP(E)"]:
+    refractive_index_input = st.text_input("굴절률 입력")
+    
 st.write("") 
 
 kor_excel_file = None
@@ -1170,7 +1175,8 @@ with col_center:
                 eng_data_map = {} 
                 
                 try:
-                    file_bytes = master_data_file.getvalue()
+                    master_data_file.seek(0)
+                    file_bytes = master_data_file.read()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
                     
                     target_sheet = None
@@ -1392,6 +1398,9 @@ with col_center:
                             fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T', mode=option)
                             fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
                             fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
+
+                            if refractive_index_input:
+                                safe_write_force(dest_ws, 182, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
 
                             s14 = parsed_data["sec14"]
                             
@@ -1694,7 +1703,11 @@ with col_center:
                             
                             refract = s9["B182"].replace("(20℃)", "")
                             r_match = re.search(r'([\d\.]+)', refract)
-                            safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
+                            
+                            if option == "HP(K)" and refractive_index_input:
+                                safe_write_force(dest_ws, 182, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
+                            else:
+                                safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
                             fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F', mode=option)
                             fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G', mode=option)
