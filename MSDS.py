@@ -61,7 +61,6 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        # [완벽 보완] 영문 H/P 코드 한 줄 제한 50자로 설정 및 요청하신 높이 하드코딩
         char_limit = 50.0
         for line in lines:
             if len(line) == 0:
@@ -102,7 +101,6 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
     if not text: return "", 19.2
     
     if "E" in mode:
-        # [완벽 보완] 마침표가 없더라도 쉼표 뒤가 아니면 특정 지시어에서 무조건 줄바꿈
         keywords = r"(IF|If|Get|When|Wash|Remove|Take|Prevent|Call|Move|Settle|Please|After|Should|Rescuer|For|Do|Wipe|Follow|Stop|Collect|Make|Absorb|Put|Since|Contaminated|Without|Empty|Keep|Store|The|It|Some|During|Containers)"
         formatted_text = re.sub(r'(?<=[a-z0-9\)\]\.\;])\s+(' + keywords + r'\b)', r'\n\1', text)
         formatted_text = re.sub(r'\.([A-Z])', r'.\n\1', formatted_text)
@@ -110,7 +108,6 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
         final_text = "\n".join(lines)
         
-        # [완벽 보완] 영문 Sec 4~8 한 줄당 높이 12.0 (한 줄당 약 73자 기준)
         char_limit_per_line = 73.0
         total_visual_lines = 0
         for line in lines:
@@ -121,8 +118,6 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         if total_visual_lines == 0: total_visual_lines = 1
         height = total_visual_lines * 12.0
         
-        # 최소 1줄의 여유 공간을 위해 24.0 (2줄 높이)을 최하한선으로 둘지 여부 (일단 높이 12.0 적용)
-        # 만약 글이 너무 좁아지면 아래 코드가 24.0으로 방어해줍니다.
         if height < 24.0: height = 24.0
         
         return final_text, height
@@ -822,6 +817,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         
         result["sec9"] = s9
 
+        # [수정] CFF(E) 14번 섹션 추출 로직
         s14 = {}
         un_text = extract_section_smart(all_lines, "14.1 UN number", "14.2 Proper", mode)
         s14["UN"] = re.sub(r'\D', '', un_text)
@@ -830,6 +826,16 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         name_text = re.sub(r'(?i)proper\s*shipping\s*name', '', name_text)
         name_text = re.sub(r'(?i)shipping\s*name', '', name_text)
         s14["NAME"] = re.sub(r'\([^)]*\)', '', name_text).strip()
+
+        class_raw = extract_section_smart(all_lines, "14.3 Transport hazard class", "14.4 Packing group", mode)
+        class_match = re.search(r'(\d)', class_raw)
+        s14["CLASS"] = class_match.group(1) if class_match else ""
+
+        pg_raw = extract_section_smart(all_lines, "14.4 Packing group", "14.5 Environmental hazard", mode)
+        s14["PG"] = pg_raw
+
+        env_raw = extract_section_smart(all_lines, "14.5 Environmental hazard", "IATA", mode)
+        s14["ENV"] = env_raw
         
         result["sec14"] = s14
 
@@ -1025,6 +1031,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"], mode)
         }
 
+    # [수정] CFF(K) 14번 섹션 추출 로직
     sec14_lines = []
     start_14 = -1; end_14 = -1
     for i, line in enumerate(all_lines):
@@ -1038,15 +1045,25 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         un_no = extract_section_smart(sec14_lines, "유엔번호", "나. 유엔", mode)
         ship_name = extract_section_smart(sec14_lines, "유엔 적정 선적명", ["다. 운송에서의", "다.운송에서의"], mode)
         class_raw = extract_section_smart(sec14_lines, "다. 운송에서의 위험성 등급", ["라. 용기등급", "라.용기등급"], mode)
+        pg_raw = extract_section_smart(sec14_lines, "라. 용기등급", "마. 환경유해성", mode)
+        env_raw = extract_section_smart(sec14_lines, "마. 환경유해성", "IATA", mode)
     else:
         un_no = extract_section_smart(sec14_lines, "유엔번호", "나. 적정선적명", mode)
         ship_name = extract_section_smart(sec14_lines, "적정선적명", ["다. 운송에서의", "다.운송에서의"], mode)
         class_raw = extract_section_smart(sec14_lines, "다. 운송에서의 위험성 등급", ["라. 용기등급", "라.용기등급"], mode)
+        pg_raw = extract_section_smart(sec14_lines, "라. 용기등급", "마. 환경유해성", mode)
+        env_raw = extract_section_smart(sec14_lines, "마. 환경유해성", "IATA", mode)
         
     if mode in ["HP(K)", "CFF(K)"]:
         class_match = re.search(r'(\d)', class_raw)
         ship_class = class_match.group(1) if class_match else ""
-        result["sec14"] = {"UN": un_no, "NAME": ship_name, "CLASS": ship_class}
+        result["sec14"] = {
+            "UN": un_no, 
+            "NAME": ship_name, 
+            "CLASS": ship_class,
+            "PG": pg_raw,
+            "ENV": env_raw
+        }
 
     sec15_lines = []
     start_15 = -1; end_15 = -1
@@ -1469,9 +1486,13 @@ with col_center:
                             fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
                             fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
+                            # [추가] CFF(E) 14번 섹션 쓰기 추가
                             s14 = parsed_data["sec14"]
                             safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
                             safe_write_force(dest_ws, 532, 2, s14["NAME"], center=False)
+                            safe_write_force(dest_ws, 533, 2, s14.get("CLASS", ""), center=False)
+                            safe_write_force(dest_ws, 534, 2, s14.get("PG", ""), center=False)
+                            safe_write_force(dest_ws, 535, 2, s14.get("ENV", ""), center=False)
 
                             today_eng = datetime.now().strftime("%d. %b. %Y")
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
@@ -1620,8 +1641,10 @@ with col_center:
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
 
-                            # [추가] 운송에서의 위험성 등급(CLASS)을 B514에 입력
+                            # [추가] 운송에서의 위험성 등급(CLASS), 용기등급(B515), 환경유해성(B516) 입력
                             safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
+                            safe_write_force(dest_ws, 515, 2, s14.get("PG", ""), center=False)
+                            safe_write_force(dest_ws, 516, 2, s14.get("ENV", ""), center=False)
 
                             s15 = parsed_data["sec15"]
                             if option == "CFF(K)":
