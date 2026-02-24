@@ -120,6 +120,7 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
         final_text = "\n".join(lines)
         
+        # [완벽 보완] Sec 4~8에도 단어 단위의 가상 줄바꿈(Word Wrap) 시뮬레이션 적용
         char_limit_per_line = 73.0
         total_visual_lines = 0
         for line in lines:
@@ -1162,7 +1163,7 @@ with col_center:
                 kor_data_map = {} 
                 eng_data_map = {} 
                 
-                # [완벽 복원] 어떠한 데이터 건너뜀(Skip)도 발생하지 않는 "순정 원본 로직" 적용
+                # [완벽 복원] 에러 무시를 위해 추가했던 불필요한 예외 처리 및 조건문을 모두 제거한 순정 원본 로직
                 try:
                     file_bytes = master_data_file.getvalue()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
