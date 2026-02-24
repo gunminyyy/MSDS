@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font, Border, Side
+from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
 from openpyxl.cell.cell import MergedCell
 from openpyxl.drawing.image import Image as XLImage
 from PIL import Image as PILImage, ImageChops
@@ -184,9 +184,15 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
             safe_write_force(ws, current_row, 2, code, center=False)
             safe_write_force(ws, current_row, 4, desc, center=False)
         else:
-            ws.row_dimensions[current_row].hidden = True
-            safe_write_force(ws, current_row, 2, "") 
-            safe_write_force(ws, current_row, 4, "")
+            # [수정] 25, 38, 50, 64, 70행은 데이터가 없어도 숨기지 않고 D열에 "자료없음" 기재
+            if "K" in mode and current_row in [25, 38, 50, 64, 70]:
+                ws.row_dimensions[current_row].hidden = False
+                safe_write_force(ws, current_row, 2, "")
+                safe_write_force(ws, current_row, 4, "자료없음", center=False)
+            else:
+                ws.row_dimensions[current_row].hidden = True
+                safe_write_force(ws, current_row, 2, "") 
+                safe_write_force(ws, current_row, 4, "")
 
 def fill_composition_data(ws, comp_data, cas_to_name_map, mode="CFF(K)"):
     start_row = 80; end_row = 123
@@ -1005,7 +1011,11 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = extract_section_smart(all_lines, "라. 먹었을", "마. 기타", mode)
         data["B129"] = extract_section_smart(all_lines, "마. 기타", ["5.", "폭발"], mode)
         data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
-        data["B133"] = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
+        
+        # [수정] B133 "특정 유해성" 제목 제거
+        b133_raw = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
+        data["B133"] = re.sub(r'^(특정\s*유해성)\s*', '', b133_raw).strip()
+        
         data["B134"] = extract_section_smart(all_lines, "다. 화재진압", ["6.", "누출"], mode)
     else: 
         data["B125"] = extract_section_smart(all_lines, "나. 눈", "다. 피부", mode)
@@ -1014,7 +1024,11 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = extract_section_smart(all_lines, "마. 먹었을", "바. 기타", mode)
         data["B129"] = extract_section_smart(all_lines, "바. 기타", ["5.", "폭발"], mode)
         data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
-        data["B133"] = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
+        
+        # [수정] B133 "특정 유해성" 제목 제거
+        b133_raw = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
+        data["B133"] = re.sub(r'^(특정\s*유해성)\s*', '', b133_raw).strip()
+        
         data["B134"] = extract_section_smart(all_lines, "다. 화재진압", ["6.", "누출"], mode)
     
     data["B138"] = extract_section_smart(all_lines, "가. 인체를", "나. 환경을", mode)
@@ -1105,9 +1119,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         sec15_lines = all_lines[start_15:end_15]
     
     if mode == "HP(K)":
-        danger_act = ""
+        danger_act = extract_section_smart(sec15_lines, "라. 위험물안전관리법", ["마. 폐기물", "마.폐기물"], mode)
     else:
-        danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", "마. 폐기물", mode)
+        danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", ["마. 폐기물", "마.폐기물"], mode)
     result["sec15"] = {"DANGER": danger_act}
 
     return result
@@ -1118,15 +1132,15 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        master_data_file = st.file_uploader("중앙 데이터 (ingredients...xlsx)", type="xlsx")
+        master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
         loaded_refs, folder_exists = get_reference_images()
         if folder_exists and loaded_refs:
-            st.success(f"✅ 신호어 {len(loaded_refs)}개 업로드됨")
+            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
         elif not folder_exists:
             st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
     with col2:
-        template_file = st.file_uploader("양식 파일 (E or K)", type="xlsx")
+        template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
 
 product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
@@ -1138,16 +1152,16 @@ if option in ["HP(K)", "HP(E)"]:
 st.write("") 
 
 kor_excel_file = None
-kor_form_version = "신버전"
+kor_form_version = "신버전 (코드 B25~, 물질 80~122행)"
 
 if option in ["CFF(E)", "HP(E)"]:
     st.markdown("---")
-    st.markdown("💡 **영문 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
+    st.markdown("💡 **(선택) 영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
     c3, c4 = st.columns(2)
     with c3:
-        kor_excel_file = st.file_uploader("국문 엑셀 파일", type="xlsx")
+        kor_excel_file = st.file_uploader("3. 국문 엑셀 파일 (선택)", type="xlsx")
     with c4:
-        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전", "구버전"])
+        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~150, 물질 추출)"])
 
 col_left, col_center, col_right = st.columns([4, 2, 4])
 
@@ -1156,7 +1170,7 @@ if 'converted_files' not in st.session_state:
     st.session_state['download_data'] = {}
 
 with col_left:
-    st.subheader("원본 파일 업로드")
+    st.subheader("3. 원본 파일 업로드")
     uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
 
 with col_center:
@@ -1259,14 +1273,16 @@ with col_center:
                     
                     def ext_codes(ws, s_r, e_r, col=2):
                         res = []
-                        regex = re.compile(r"([HP]\s?\d{3}(?:\s*\+\s*[HP]\s?\d{3})*)")
+                        regex = re.compile(r"([HP]\d{3}(?:\+[HP]\d{3})*)")
                         for r in range(s_r, e_r + 1):
                             val = ws.cell(row=r, column=col).value
                             if val:
-                                matches = regex.findall(str(val))
-                                for m in matches:
-                                    c = m.replace(" ", "").upper()
-                                    if c not in res: res.append(c)
+                                val_str = str(val).strip().upper()
+                                # [수정] H나 P 뒤에 3자리 숫자가 오는 패턴으로 시작할 때만 정확히 추출
+                                if re.match(r'^[HP]\s?\d{3}', val_str):
+                                    matches = regex.findall(val_str.replace(" ", ""))
+                                    for m in matches:
+                                        if m not in res: res.append(m)
                         return res
 
                     def ext_comp(ws, s_r, e_r, cas_col=4, conc_col=6):
@@ -1576,7 +1592,7 @@ with col_center:
                             safe_write_force(dest_ws, 534, 2, pg_val, center=False)
                             safe_write_force(dest_ws, 535, 2, env_val, center=False)
 
-                            today_eng = datetime.now().strftime("%d. %b. %Y")
+                            today_eng = datetime.now().strftime("%d. %b. %Y").upper()
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
                             
                             collected_pil_images = []
@@ -1749,8 +1765,19 @@ with col_center:
                             safe_write_force(dest_ws, 516, 2, env_val, center=False)
 
                             s15 = parsed_data["sec15"]
-                            if option == "CFF(K)":
-                                safe_write_force(dest_ws, 521, 2, s15["DANGER"], center=False)
+                            
+                            danger_text = s15.get("DANGER", "").strip()
+                            clean_danger = danger_text.replace(" ", "")
+                            target_cff = "4류 제3석유류(비수용성) 2,000L".replace(" ", "")
+                            target_hp = "- 위험물에 해당됨 : 제4류 인화성액체, 제3석유류 (비수용성액체) (지정수량 : 2,000리터)".replace(" ", "")
+                            
+                            if option == "CFF(K)" and clean_danger == target_cff:
+                                safe_write_force(dest_ws, 521, 2, "4류 제3석유류(비수용성) 2,000L", center=False)
+                            elif option == "HP(K)" and clean_danger == target_hp:
+                                safe_write_force(dest_ws, 521, 2, "4류 제3석유류(비수용성) 2,000L", center=False)
+                            else:
+                                safe_write_force(dest_ws, 521, 2, "", center=False)
+                                dest_ws.cell(row=521, column=2).fill = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
 
                             today_str = datetime.now().strftime("%Y.%m.%d")
                             safe_write_force(dest_ws, 542, 2, today_str, center=False)
@@ -1842,4 +1869,3 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
-
