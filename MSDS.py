@@ -61,7 +61,7 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        char_limit = 60.0
+        char_limit = 50.0
         for line in lines:
             if len(line) == 0:
                 total_visual_lines += 1
@@ -120,12 +120,26 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
         final_text = "\n".join(lines)
         
+        # [수정] Sec 4~8 부분에도 단어 단위 가상 줄바꿈(Word Wrap) 로직 적용
         char_limit_per_line = 73.0
         total_visual_lines = 0
         for line in lines:
-            visual_lines = math.ceil(len(line) / char_limit_per_line)
-            if visual_lines == 0: visual_lines = 1
-            total_visual_lines += visual_lines
+            if len(line) == 0:
+                total_visual_lines += 1
+            else:
+                words = line.split(" ")
+                current_len = 0
+                lines_for_this_paragraph = 1
+                
+                for word in words:
+                    if current_len == 0:
+                        current_len = len(word)
+                    elif current_len + 1 + len(word) <= char_limit_per_line:
+                        current_len += 1 + len(word)
+                    else:
+                        lines_for_this_paragraph += 1
+                        current_len = len(word)
+                total_visual_lines += lines_for_this_paragraph
             
         if total_visual_lines == 0: total_visual_lines = 1
         height = total_visual_lines * 12.0
@@ -1149,7 +1163,7 @@ with col_center:
                 kor_data_map = {} 
                 eng_data_map = {} 
                 
-                # [완벽 복구] 가장 안정적인 원본 파일 읽기 로직 (에러 무시 없음)
+                # [완벽 복구] 가장 처음에 성공하셨던 '어떠한 데이터 무시도 없는' 순정 데이터 로드 로직
                 try:
                     file_bytes = master_data_file.getvalue()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
@@ -1168,48 +1182,46 @@ with col_center:
                         for _, row in df_code.iterrows():
                             if pd.notna(row.iloc[0]):
                                 code_key = str(row.iloc[0]).replace(" ","").upper().strip()
-                                if len(row) > target_col_idx:
-                                    val = row.iloc[target_col_idx]
-                                    code_val = str(val).strip() if pd.notna(val) else ""
-                                    code_map[code_key] = code_val
+                                val = row.iloc[target_col_idx]
+                                code_map[code_key] = str(val).strip() if pd.notna(val) else ""
                     
-                        if "K" in option:
-                            sheet_kor = None
-                            for sheet in xls.sheet_names:
-                                if "국문" in sheet: sheet_kor = sheet; break
-                            if sheet_kor:
-                                df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
-                                for _, row in df_kor.iterrows():
-                                    val_cas = row.iloc[0]
-                                    val_name = row.iloc[1]
-                                    if pd.notna(val_cas):
-                                        c = str(val_cas).replace(" ", "").strip()
-                                        n = str(val_name).strip() if pd.notna(val_name) else ""
-                                        cas_name_map[c] = n
-                                        if n:
-                                            kor_data_map[n] = {
-                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                                'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                            }
-                        else: # E 모드 (CFF E 등)
-                            sheet_eng = None
-                            for sheet in xls.sheet_names:
-                                if "영문" in sheet: sheet_eng = sheet; break
-                            if sheet_eng:
-                                df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
-                                for _, row in df_eng.iterrows():
-                                    val_cas = row.iloc[0]
-                                    val_name = row.iloc[1]
-                                    if pd.notna(val_cas):
-                                        c = str(val_cas).replace(" ", "").strip()
-                                        n = str(val_name).strip() if pd.notna(val_name) else ""
-                                        cas_name_map[c] = n
-                                        if n:
-                                            eng_data_map[n] = {
-                                                'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                                'P': row.iloc[15], 'Q': row.iloc[16], 
-                                                'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
-                                            }
+                    if "K" in option:
+                        sheet_kor = None
+                        for sheet in xls.sheet_names:
+                            if "국문" in sheet: sheet_kor = sheet; break
+                        if sheet_kor:
+                            df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
+                            for _, row in df_kor.iterrows():
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                    cas_name_map[c] = n
+                                    if n:
+                                        kor_data_map[n] = {
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                        }
+                    else: # E 모드 (CFF E 등)
+                        sheet_eng = None
+                        for sheet in xls.sheet_names:
+                            if "영문" in sheet: sheet_eng = sheet; break
+                        if sheet_eng:
+                            df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
+                            for _, row in df_eng.iterrows():
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                    cas_name_map[c] = n
+                                    if n:
+                                        eng_data_map[n] = {
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'Q': row.iloc[16], 
+                                            'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                        }
 
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
