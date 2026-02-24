@@ -61,8 +61,7 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        # [최적화] 영문 H/P 코드 한 줄 제한 65.0자로 설정 (유저 예시 기반 완벽 대응)
-        char_limit = 65.0
+        char_limit = 62.0
         for line in lines:
             if len(line) == 0:
                 total_visual_lines += 1
@@ -1171,8 +1170,7 @@ with col_center:
                 eng_data_map = {} 
                 
                 try:
-                    master_data_file.seek(0)
-                    file_bytes = master_data_file.read()
+                    file_bytes = master_data_file.getvalue()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
                     
                     target_sheet = None
@@ -1205,13 +1203,8 @@ with col_center:
                                     cas_name_map[c] = n
                                     if n:
                                         kor_data_map[n] = {
-                                            'F': str(row.iloc[5]) if len(row) > 5 else "", 
-                                            'G': str(row.iloc[6]) if len(row) > 6 else "", 
-                                            'H': str(row.iloc[7]) if len(row) > 7 else "",
-                                            'P': str(row.iloc[15]) if len(row) > 15 else "", 
-                                            'T': str(row.iloc[19]) if len(row) > 19 else "", 
-                                            'U': str(row.iloc[20]) if len(row) > 20 else "", 
-                                            'V': str(row.iloc[21]) if len(row) > 21 else ""
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
                                         }
                     else: # E 모드 (CFF E 등)
                         sheet_eng = None
@@ -1226,14 +1219,9 @@ with col_center:
                                     cas_name_map[c] = n
                                     if n:
                                         eng_data_map[n] = {
-                                            'F': str(row.iloc[5]) if len(row) > 5 else "", 
-                                            'G': str(row.iloc[6]) if len(row) > 6 else "", 
-                                            'H': str(row.iloc[7]) if len(row) > 7 else "",
-                                            'P': str(row.iloc[15]) if len(row) > 15 else "", 
-                                            'Q': str(row.iloc[16]) if len(row) > 16 else "", 
-                                            'T': str(row.iloc[19]) if len(row) > 19 else "", 
-                                            'U': str(row.iloc[20]) if len(row) > 20 else "", 
-                                            'V': str(row.iloc[21]) if len(row) > 21 else ""
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'Q': row.iloc[16], 
+                                            'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
                                         }
 
                 except Exception as e:
@@ -1269,8 +1257,7 @@ with col_center:
                             if cas and str(cas).strip():
                                 c_val = str(cas).strip()
                                 cn_val = str(conc).strip() if conc else ""
-                                if re.search(r'\d{2,7}-\d{2}-\d', c_val):
-                                    res.append((c_val, cn_val))
+                                res.append((c_val, cn_val))
                         return res
 
                     if "신버전" in kor_form_version:
@@ -1325,6 +1312,7 @@ with col_center:
                             if parsed_data["hazard_cls"]:
                                 clean_cls = "\n".join(parsed_data["hazard_cls"])
                                 safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
+                                dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
                             
                             if parsed_data["signal_word"]:
                                 safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
@@ -1466,6 +1454,7 @@ with col_center:
                             if parsed_data["hazard_cls"]:
                                 clean_cls = "\n".join(parsed_data["hazard_cls"])
                                 safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
+                                dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
                             
                             if parsed_data["signal_word"]:
                                 safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
@@ -1609,6 +1598,9 @@ with col_center:
                                 clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
                                 safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
                                 dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
+                                valid_lines_count = len([line for line in parsed_data["hazard_cls"] if line.strip()])
+                                if valid_lines_count > 0:
+                                    dest_ws.row_dimensions[20].height = valid_lines_count * 14.0
 
                             signal_final = parsed_data["signal_word"] if parsed_data["signal_word"] else ""
                             safe_write_force(dest_ws, 24, 2, signal_final, center=False) 
