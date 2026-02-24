@@ -1272,6 +1272,9 @@ with col_center:
                         res = []
                         regex = re.compile(r"([HP]\d{3}(?:\+[HP]\d{3})*)")
                         for r in range(s_r, e_r + 1):
+                            # [수정] 숨겨진 행에 남아있는 예전 템플릿 코드 쓰레기값 무시
+                            if ws.row_dimensions[r].hidden: 
+                                continue
                             val = ws.cell(row=r, column=col).value
                             if val:
                                 val_str = str(val).strip().upper()
@@ -1285,6 +1288,9 @@ with col_center:
                         res = []
                         cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
                         for r in range(s_r, e_r + 1):
+                            # [수정] 숨겨진 행 무시 적용
+                            if ws.row_dimensions[r].hidden: 
+                                continue
                             cas = ws.cell(row=r, column=cas_col).value
                             conc = ws.cell(row=r, column=conc_col).value
                             if cas and str(cas).strip():
