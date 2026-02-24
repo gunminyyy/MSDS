@@ -720,18 +720,26 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         s9["B189"] = "± 0.005"
         result["sec9"] = s9
 
+        # [수정] HP(E) 14번 섹션 추출 로직 추가
         s14 = {}
         un_raw = extract_section_smart(all_lines, "UN No.", "Proper shipping name", mode)
         s14["UN"] = re.sub(r'\D', '', un_raw)
         
-        name_raw = extract_section_smart(all_lines, "Proper shipping name", "Hazard Class", mode)
+        name_raw = extract_section_smart(all_lines, "Proper shipping name", ["C. Hazard Class", "Hazard Class"], mode)
         name_cln = re.sub(r'(?i)proper\s*shipping\s*name', '', name_raw)
         name_cln = re.sub(r'(?i)shipping\s*name', '', name_cln)
         s14["NAME"] = re.sub(r'\([^)]*\)', '', name_cln).replace("-", "").strip()
         
-        class_raw = extract_section_smart(all_lines, "Hazard Class", "Packing group", mode)
+        class_raw = extract_section_smart(all_lines, "C. Hazard Class", ["D. IMDG", "Packing group"], mode)
+        class_raw = class_raw.replace("-", "")
         class_match = re.search(r'(\d)', class_raw)
         s14["CLASS"] = class_match.group(1) if class_match else ""
+
+        pg_raw = extract_section_smart(all_lines, "Packing group", "E. Marine pollutant", mode)
+        s14["PG"] = pg_raw.replace("-", "").strip()
+
+        env_raw = extract_section_smart(all_lines, "E. Marine pollutant", "F. Special precautions", mode)
+        s14["ENV"] = env_raw.replace("-", "").strip()
         
         result["sec14"] = s14
 
@@ -1055,7 +1063,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"], mode)
         }
 
-    # [수정] 14번 섹션 추출 로직
     sec14_lines = []
     start_14 = -1; end_14 = -1
     for i, line in enumerate(all_lines):
@@ -1072,6 +1079,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         pg_raw = extract_section_smart(sec14_lines, "라. 용기등급", ["마. 해양오염물질", "마.해양오염물질"], mode)
         env_raw = extract_section_smart(sec14_lines, "마. 해양오염물질", ["바. 사용자", "바.사용자"], mode)
         
+        pg_raw = re.sub(r'\(\s*IMDG\s*CODE\s*/\s*IATA\s*DGR\s*\)', '', pg_raw, flags=re.IGNORECASE)
         pg_raw = pg_raw.replace("-", "").strip()
         env_raw = env_raw.replace("-", "").strip()
     else:
@@ -1184,10 +1192,8 @@ with col_center:
                         for _, row in df_code.iterrows():
                             if pd.notna(row.iloc[0]):
                                 code_key = str(row.iloc[0]).replace(" ","").upper().strip()
-                                # [수정] 열 개수를 안전하게 확인하는 get_safe 람다 함수 사용
-                                val = row.iloc[target_col_idx] if len(row) > target_col_idx else ""
-                                code_val = str(val).strip() if pd.notna(val) else ""
-                                if code_val and code_val != "nan": code_map[code_key] = code_val
+                                val = row.iloc[target_col_idx]
+                                code_map[code_key] = str(val).strip() if pd.notna(val) else ""
                     
                     if "K" in option:
                         sheet_kor = None
@@ -1196,16 +1202,16 @@ with col_center:
                         if sheet_kor:
                             df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
                             for _, row in df_kor.iterrows():
-                                if pd.notna(row.iloc[0]):
-                                    c = str(row.iloc[0]).replace(" ", "").strip()
-                                    n = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
                                     cas_name_map[c] = n
                                     if n:
-                                        # [수정] 인덱스 초과 에러를 막는 가장 안전하고 확실한 추출
-                                        get_safe = lambda r, idx: str(r.iloc[idx]) if len(r) > idx and pd.notna(r.iloc[idx]) else ""
                                         kor_data_map[n] = {
-                                            'F': get_safe(row, 5), 'G': get_safe(row, 6), 'H': get_safe(row, 7),
-                                            'P': get_safe(row, 15), 'T': get_safe(row, 19), 'U': get_safe(row, 20), 'V': get_safe(row, 21)
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
                                         }
                     else: # E 모드 (CFF E 등)
                         sheet_eng = None
@@ -1214,17 +1220,17 @@ with col_center:
                         if sheet_eng:
                             df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
                             for _, row in df_eng.iterrows():
-                                if pd.notna(row.iloc[0]):
-                                    c = str(row.iloc[0]).replace(" ", "").strip()
-                                    n = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
                                     cas_name_map[c] = n
                                     if n:
-                                        # [수정] 인덱스 초과 에러를 막는 가장 안전하고 확실한 추출
-                                        get_safe = lambda r, idx: str(r.iloc[idx]) if len(r) > idx and pd.notna(r.iloc[idx]) else ""
                                         eng_data_map[n] = {
-                                            'F': get_safe(row, 5), 'G': get_safe(row, 6), 'H': get_safe(row, 7),
-                                            'P': get_safe(row, 15), 'Q': get_safe(row, 16), 
-                                            'T': get_safe(row, 19), 'U': get_safe(row, 20), 'V': get_safe(row, 21)
+                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
+                                            'P': row.iloc[15], 'Q': row.iloc[16], 
+                                            'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
                                         }
 
                 except Exception as e:
