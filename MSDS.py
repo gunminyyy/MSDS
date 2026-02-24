@@ -511,7 +511,8 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
         for i in range(1, len(cleaned_lines)):
             prev = cleaned_lines[i-1]; curr = cleaned_lines[i]
             
-            if mode == "CFF(E)":
+            # [수정] CFF(E)와 HP(E) 모두에게 엑셀 줄바꿈 시스템 적용 (PDF Gap 기반)
+            if mode in ["CFF(E)", "HP(E)"]:
                 prev_txt = prev['text'].strip()
                 curr_txt = curr['text'].strip()
                 
@@ -519,12 +520,6 @@ def extract_section_smart(all_lines, start_kw, end_kw, mode="CFF(K)"):
                 gap = curr['global_y0'] - prev['global_y1']
                 
                 if starts_with_bullet or gap >= 3.0:
-                    final_text += "\n" + curr_txt
-                else:
-                    final_text += " " + curr_txt
-            elif mode == "HP(E)":
-                curr_txt = curr['text'].strip()
-                if curr_txt.startswith("-") or curr_txt.startswith("•"):
                     final_text += "\n" + curr_txt
                 else:
                     final_text += " " + curr_txt
@@ -720,7 +715,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         s9["B189"] = "± 0.005"
         result["sec9"] = s9
 
-        # [수정] HP(E) 14번 섹션 추출 로직 추가
         s14 = {}
         un_raw = extract_section_smart(all_lines, "UN No.", "Proper shipping name", mode)
         s14["UN"] = re.sub(r'\D', '', un_raw)
@@ -1147,7 +1141,7 @@ if option in ["CFF(E)", "HP(E)"]:
     with c3:
         kor_excel_file = st.file_uploader("3. 국문 엑셀 파일 (선택)", type="xlsx")
     with c4:
-        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~60, 물질 61~103행)"])
+        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~150, 물질 추출)"])
 
 col_left, col_center, col_right = st.columns([4, 2, 4])
 
@@ -1266,7 +1260,8 @@ with col_center:
                             if cas and str(cas).strip():
                                 c_val = str(cas).strip()
                                 cn_val = str(conc).strip() if conc else ""
-                                res.append((c_val, cn_val))
+                                if re.search(r'\d{2,7}-\d{2}-\d', c_val):
+                                    res.append((c_val, cn_val))
                         return res
 
                     if "신버전" in kor_form_version:
@@ -1277,13 +1272,13 @@ with col_center:
                         kor_override_data["p_disp"] = ext_codes(kor_ws, 70, 72)
                         kor_override_data["composition_data"] = ext_comp(kor_ws, 80, 122)
                     else:
-                        all_c = ext_codes(kor_ws, 25, 60)
+                        all_c = ext_codes(kor_ws, 25, 150)
                         kor_override_data["h_codes"] = [c for c in all_c if c.startswith('H')]
                         kor_override_data["p_prev"] = [c for c in all_c if c.startswith('P2')]
                         kor_override_data["p_resp"] = [c for c in all_c if c.startswith('P3')]
                         kor_override_data["p_stor"] = [c for c in all_c if c.startswith('P4')]
                         kor_override_data["p_disp"] = [c for c in all_c if c.startswith('P5')]
-                        kor_override_data["composition_data"] = ext_comp(kor_ws, 61, 103)
+                        kor_override_data["composition_data"] = ext_comp(kor_ws, 25, 150)
 
                 for uploaded_file in uploaded_files:
                     try:
