@@ -1118,15 +1118,15 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 with st.expander("📂 필수 파일 업로드", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
-        master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
+        master_data_file = st.file_uploader("중앙 데이터 (ingredients...xlsx)", type="xlsx")
         loaded_refs, folder_exists = get_reference_images()
         if folder_exists and loaded_refs:
-            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
+            st.success(f"✅ 신호어 {len(loaded_refs)}개 업로드됨")
         elif not folder_exists:
             st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
     with col2:
-        template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
+        template_file = st.file_uploader("양식 파일 (E or K)", type="xlsx")
 
 product_name_input = st.text_input("제품명 입력")
 option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
@@ -1138,16 +1138,16 @@ if option in ["HP(K)", "HP(E)"]:
 st.write("") 
 
 kor_excel_file = None
-kor_form_version = "신버전 (코드 B25~, 물질 80~122행)"
+kor_form_version = "신버전"
 
 if option in ["CFF(E)", "HP(E)"]:
     st.markdown("---")
-    st.markdown("💡 **(선택) 영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
+    st.markdown("💡 **영문 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
     c3, c4 = st.columns(2)
     with c3:
-        kor_excel_file = st.file_uploader("3. 국문 엑셀 파일 (선택)", type="xlsx")
+        kor_excel_file = st.file_uploader("국문 엑셀 파일", type="xlsx")
     with c4:
-        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~150, 물질 추출)"])
+        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전", "구버전"])
 
 col_left, col_center, col_right = st.columns([4, 2, 4])
 
@@ -1156,7 +1156,7 @@ if 'converted_files' not in st.session_state:
     st.session_state['download_data'] = {}
 
 with col_left:
-    st.subheader("3. 원본 파일 업로드")
+    st.subheader("원본 파일 업로드")
     uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
 
 with col_center:
@@ -1842,3 +1842,4 @@ with col_right:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
+
