@@ -61,7 +61,6 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        # [수정] 엑셀의 '단어 단위 자동 줄바꿈'을 모사하는 로직 적용
         char_limit = 60.0
         for line in lines:
             if len(line) == 0:
@@ -1150,6 +1149,7 @@ with col_center:
                 kor_data_map = {} 
                 eng_data_map = {} 
                 
+                # [완벽 복구] 가장 안정적인 원본 파일 읽기 로직 (에러 무시 없음)
                 try:
                     file_bytes = master_data_file.getvalue()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
@@ -1173,14 +1173,13 @@ with col_center:
                                     code_val = str(val).strip() if pd.notna(val) else ""
                                     code_map[code_key] = code_val
                     
-                    if "K" in option:
-                        sheet_kor = None
-                        for sheet in xls.sheet_names:
-                            if "국문" in sheet: sheet_kor = sheet; break
-                        if sheet_kor:
-                            df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
-                            for _, row in df_kor.iterrows():
-                                try:
+                        if "K" in option:
+                            sheet_kor = None
+                            for sheet in xls.sheet_names:
+                                if "국문" in sheet: sheet_kor = sheet; break
+                            if sheet_kor:
+                                df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
+                                for _, row in df_kor.iterrows():
                                     val_cas = row.iloc[0]
                                     val_name = row.iloc[1]
                                     if pd.notna(val_cas):
@@ -1192,15 +1191,13 @@ with col_center:
                                                 'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
                                                 'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
                                             }
-                                except Exception: pass
-                    else: # E 모드 (CFF E 등)
-                        sheet_eng = None
-                        for sheet in xls.sheet_names:
-                            if "영문" in sheet: sheet_eng = sheet; break
-                        if sheet_eng:
-                            df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
-                            for _, row in df_eng.iterrows():
-                                try:
+                        else: # E 모드 (CFF E 등)
+                            sheet_eng = None
+                            for sheet in xls.sheet_names:
+                                if "영문" in sheet: sheet_eng = sheet; break
+                            if sheet_eng:
+                                df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
+                                for _, row in df_eng.iterrows():
                                     val_cas = row.iloc[0]
                                     val_name = row.iloc[1]
                                     if pd.notna(val_cas):
@@ -1213,7 +1210,6 @@ with col_center:
                                                 'P': row.iloc[15], 'Q': row.iloc[16], 
                                                 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
                                             }
-                                except Exception: pass
 
                 except Exception as e:
                     st.error(f"데이터 로드 오류: {e}")
