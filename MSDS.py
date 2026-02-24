@@ -61,7 +61,7 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        char_limit = 62.0
+        char_limit = 50.0
         for line in lines:
             if len(line) == 0:
                 total_visual_lines += 1
@@ -117,7 +117,6 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         formatted_text = re.sub(r'(?<=[a-z0-9\)\]\.\;])\s+(' + keywords + r'\b)', r'\n\1', text)
         formatted_text = re.sub(r'\.([A-Z])', r'.\n\1', formatted_text)
         
-        # [수정] "Follow Stop" 예외 처리 (줄바꿈 취소)
         formatted_text = formatted_text.replace("Follow\nStop", "Follow Stop")
         
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
@@ -1171,8 +1170,7 @@ with col_center:
                 eng_data_map = {} 
                 
                 try:
-                    master_data_file.seek(0)
-                    file_bytes = master_data_file.read()
+                    file_bytes = master_data_file.getvalue()
                     xls = pd.ExcelFile(io.BytesIO(file_bytes))
                     
                     target_sheet = None
@@ -1382,11 +1380,27 @@ with col_center:
                             fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
                             s14 = parsed_data["sec14"]
-                            safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
-                            safe_write_force(dest_ws, 532, 2, s14["NAME"], center=False)
-                            safe_write_force(dest_ws, 533, 2, s14.get("CLASS", ""), center=False)
-                            safe_write_force(dest_ws, 534, 2, s14.get("PG", ""), center=False)
-                            safe_write_force(dest_ws, 535, 2, s14.get("ENV", ""), center=False)
+                            
+                            un_val = str(s14.get("UN", "")).strip()
+                            if not un_val or un_val.lower() == "not applicable": un_val = "no data available"
+                            
+                            name_val = str(s14.get("NAME", "")).strip()
+                            if not name_val or name_val.lower() == "not applicable": name_val = "no data available"
+                            
+                            class_val = str(s14.get("CLASS", "")).strip()
+                            if not class_val or class_val.lower() == "not applicable": class_val = "Not applicable"
+                            
+                            pg_val = str(s14.get("PG", "")).strip()
+                            if not pg_val or pg_val.lower() == "not applicable": pg_val = "Not applicable"
+                            
+                            env_val = str(s14.get("ENV", "")).strip()
+                            if not env_val or env_val.lower() == "not applicable": env_val = "Not applicable"
+                            
+                            safe_write_force(dest_ws, 531, 2, un_val, center=False)
+                            safe_write_force(dest_ws, 532, 2, name_val, center=False)
+                            safe_write_force(dest_ws, 533, 2, class_val, center=False)
+                            safe_write_force(dest_ws, 534, 2, pg_val, center=False)
+                            safe_write_force(dest_ws, 535, 2, env_val, center=False)
 
                             today_eng = datetime.now().strftime("%d. %b. %Y").upper()
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
@@ -1516,11 +1530,27 @@ with col_center:
                             fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
                             s14 = parsed_data["sec14"]
-                            safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
-                            safe_write_force(dest_ws, 532, 2, s14["NAME"], center=False)
-                            safe_write_force(dest_ws, 533, 2, s14.get("CLASS", ""), center=False)
-                            safe_write_force(dest_ws, 534, 2, s14.get("PG", ""), center=False)
-                            safe_write_force(dest_ws, 535, 2, s14.get("ENV", ""), center=False)
+                            
+                            un_val = str(s14.get("UN", "")).strip()
+                            if not un_val or un_val.lower() == "not applicable": un_val = "no data available"
+                            
+                            name_val = str(s14.get("NAME", "")).strip()
+                            if not name_val or name_val.lower() == "not applicable": name_val = "no data available"
+                            
+                            class_val = str(s14.get("CLASS", "")).strip()
+                            if not class_val or class_val.lower() == "not applicable": class_val = "Not applicable"
+                            
+                            pg_val = str(s14.get("PG", "")).strip()
+                            if not pg_val or pg_val.lower() == "not applicable": pg_val = "Not applicable"
+                            
+                            env_val = str(s14.get("ENV", "")).strip()
+                            if not env_val or env_val.lower() == "not applicable": env_val = "Not applicable"
+                            
+                            safe_write_force(dest_ws, 531, 2, un_val, center=False)
+                            safe_write_force(dest_ws, 532, 2, name_val, center=False)
+                            safe_write_force(dest_ws, 533, 2, class_val, center=False)
+                            safe_write_force(dest_ws, 534, 2, pg_val, center=False)
+                            safe_write_force(dest_ws, 535, 2, env_val, center=False)
 
                             today_eng = datetime.now().strftime("%d. %b. %Y")
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
@@ -1663,15 +1693,29 @@ with col_center:
                             for r in range(461, 464): dest_ws.row_dimensions[r].hidden = True
 
                             s14 = parsed_data["sec14"]
-                            un_val = re.sub(r"\D", "", s14["UN"])
-                            safe_write_force(dest_ws, 512, 2, un_val, center=False)
                             
-                            name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
-                            safe_write_force(dest_ws, 513, 2, name_val, center=False)
+                            un_raw = str(s14.get("UN", "")).strip()
+                            un_val = re.sub(r"\D", "", un_raw)
+                            if not un_val or "해당없음" in un_raw: un_val = "자료없음"
+                            
+                            name_raw = str(s14.get("NAME", "")).strip()
+                            name_val = re.sub(r"\([^)]*\)", "", name_raw).strip()
+                            if not name_val or "해당없음" in name_raw: name_val = "자료없음"
+                            
+                            class_val = str(s14.get("CLASS", "")).strip()
+                            if not class_val or "해당없음" in class_val: class_val = "해당없음"
+                            
+                            pg_val = str(s14.get("PG", "")).strip()
+                            if not pg_val or "해당없음" in pg_val: pg_val = "해당없음"
+                            
+                            env_val = str(s14.get("ENV", "")).strip()
+                            if not env_val or "해당없음" in env_val: env_val = "해당없음"
 
-                            safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
-                            safe_write_force(dest_ws, 515, 2, s14.get("PG", ""), center=False)
-                            safe_write_force(dest_ws, 516, 2, s14.get("ENV", ""), center=False)
+                            safe_write_force(dest_ws, 512, 2, un_val, center=False)
+                            safe_write_force(dest_ws, 513, 2, name_val, center=False)
+                            safe_write_force(dest_ws, 514, 2, class_val, center=False)
+                            safe_write_force(dest_ws, 515, 2, pg_val, center=False)
+                            safe_write_force(dest_ws, 516, 2, env_val, center=False)
 
                             s15 = parsed_data["sec15"]
                             if option == "CFF(K)":
