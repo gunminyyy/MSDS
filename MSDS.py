@@ -61,7 +61,7 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        char_limit = 62.0
+        char_limit = 65.0
         for line in lines:
             if len(line) == 0:
                 total_visual_lines += 1
@@ -1197,14 +1197,21 @@ with col_center:
                         if sheet_kor:
                             df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
                             for _, row in df_kor.iterrows():
-                                if pd.notna(row.iloc[0]):
-                                    c = str(row.iloc[0]).replace(" ", "").strip()
-                                    n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
                                     cas_name_map[c] = n
                                     if n:
                                         kor_data_map[n] = {
-                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                            'P': row.iloc[15], 'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                            'F': str(row.iloc[5]) if len(row) > 5 else "", 
+                                            'G': str(row.iloc[6]) if len(row) > 6 else "", 
+                                            'H': str(row.iloc[7]) if len(row) > 7 else "",
+                                            'P': str(row.iloc[15]) if len(row) > 15 else "", 
+                                            'T': str(row.iloc[19]) if len(row) > 19 else "", 
+                                            'U': str(row.iloc[20]) if len(row) > 20 else "", 
+                                            'V': str(row.iloc[21]) if len(row) > 21 else ""
                                         }
                     else: # E 모드 (CFF E 등)
                         sheet_eng = None
@@ -1213,15 +1220,22 @@ with col_center:
                         if sheet_eng:
                             df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
                             for _, row in df_eng.iterrows():
-                                if pd.notna(row.iloc[0]):
-                                    c = str(row.iloc[0]).replace(" ", "").strip()
-                                    n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+                                val_cas = row.iloc[0]
+                                val_name = row.iloc[1]
+                                if pd.notna(val_cas):
+                                    c = str(val_cas).replace(" ", "").strip()
+                                    n = str(val_name).strip() if pd.notna(val_name) else ""
                                     cas_name_map[c] = n
                                     if n:
                                         eng_data_map[n] = {
-                                            'F': row.iloc[5], 'G': row.iloc[6], 'H': row.iloc[7],
-                                            'P': row.iloc[15], 'Q': row.iloc[16], 
-                                            'T': row.iloc[19], 'U': row.iloc[20], 'V': row.iloc[21]
+                                            'F': str(row.iloc[5]) if len(row) > 5 else "", 
+                                            'G': str(row.iloc[6]) if len(row) > 6 else "", 
+                                            'H': str(row.iloc[7]) if len(row) > 7 else "",
+                                            'P': str(row.iloc[15]) if len(row) > 15 else "", 
+                                            'Q': str(row.iloc[16]) if len(row) > 16 else "", 
+                                            'T': str(row.iloc[19]) if len(row) > 19 else "", 
+                                            'U': str(row.iloc[20]) if len(row) > 20 else "", 
+                                            'V': str(row.iloc[21]) if len(row) > 21 else ""
                                         }
 
                 except Exception as e:
@@ -1251,13 +1265,17 @@ with col_center:
 
                     def ext_comp(ws, s_r, e_r, cas_col=4, conc_col=6):
                         res = []
+                        cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
                         for r in range(s_r, e_r + 1):
                             cas = ws.cell(row=r, column=cas_col).value
                             conc = ws.cell(row=r, column=conc_col).value
                             if cas and str(cas).strip():
                                 c_val = str(cas).strip()
                                 cn_val = str(conc).strip() if conc else ""
-                                res.append((c_val, cn_val))
+                                match = cas_regex.search(c_val)
+                                if match:
+                                    c_val_clean = match.group(1).replace(" ", "")
+                                    res.append((c_val_clean, cn_val))
                         return res
 
                     if "신버전" in kor_form_version:
