@@ -61,12 +61,25 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        char_limit = 50.0
+        # [수정] 엑셀의 '단어 단위 자동 줄바꿈'을 모사하는 로직 적용
+        char_limit = 60.0
         for line in lines:
             if len(line) == 0:
                 total_visual_lines += 1
             else:
-                total_visual_lines += math.ceil(len(line) / char_limit)
+                words = line.split(" ")
+                current_len = 0
+                lines_for_this_paragraph = 1
+                
+                for word in words:
+                    if current_len == 0:
+                        current_len = len(word)
+                    elif current_len + 1 + len(word) <= char_limit:
+                        current_len += 1 + len(word)
+                    else:
+                        lines_for_this_paragraph += 1
+                        current_len = len(word)
+                total_visual_lines += lines_for_this_paragraph
                 
         if total_visual_lines <= 1: 
             return 18.75
@@ -817,7 +830,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         
         result["sec9"] = s9
 
-        # [수정] CFF(E) 14번 섹션 추출 로직
         s14 = {}
         un_text = extract_section_smart(all_lines, "14.1 UN number", "14.2 Proper", mode)
         s14["UN"] = re.sub(r'\D', '', un_text)
@@ -1031,7 +1043,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             "B182": extract_section_smart(sec9_lines, "굴절률", ["10. 안정성", "10. 화학적"], mode)
         }
 
-    # [수정] CFF(K) 14번 섹션 추출 로직
     sec14_lines = []
     start_14 = -1; end_14 = -1
     for i, line in enumerate(all_lines):
@@ -1486,7 +1497,6 @@ with col_center:
                             fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
                             fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
-                            # [추가] CFF(E) 14번 섹션 쓰기 추가
                             s14 = parsed_data["sec14"]
                             safe_write_force(dest_ws, 531, 2, s14["UN"], center=False)
                             safe_write_force(dest_ws, 532, 2, s14["NAME"], center=False)
@@ -1641,7 +1651,6 @@ with col_center:
                             name_val = re.sub(r"\([^)]*\)", "", s14["NAME"]).strip()
                             safe_write_force(dest_ws, 513, 2, name_val, center=False)
 
-                            # [추가] 운송에서의 위험성 등급(CLASS), 용기등급(B515), 환경유해성(B516) 입력
                             safe_write_force(dest_ws, 514, 2, s14.get("CLASS", ""), center=False)
                             safe_write_force(dest_ws, 515, 2, s14.get("PG", ""), center=False)
                             safe_write_force(dest_ws, 516, 2, s14.get("ENV", ""), center=False)
