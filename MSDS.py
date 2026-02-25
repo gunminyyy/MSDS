@@ -1399,6 +1399,11 @@ with col_btn:
                                     r_idx = int(re.search(r'\d+', addr).group())
                                     safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
                                     dest_ws.row_dimensions[r_idx].height = h
+                                    
+                                dest_ws.row_dimensions[170].height = 18.4
+                                dest_ws.row_dimensions[176].height = 18.4
+                                dest_ws.row_dimensions[183].height = 18.4
+                                dest_ws.row_dimensions[189].height = 18.4
 
                                 s8 = parsed_data["sec8"]
                                 if "B156" in s8:
@@ -1421,7 +1426,6 @@ with col_btn:
                                 fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
                                 fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
-                                # [수정: HP(E) 굴절률(B189) 단독 처리 로직 복구]
                                 refract = parsed_data["sec9"].get("B189", "").replace("(20℃)", "")
                                 r_match = re.search(r'([\d\.]+)', refract)
                                 
@@ -1498,13 +1502,12 @@ with col_btn:
                                     "B150": sd.get("B150",""),
                                     "B170": parsed_data["sec9"].get("B170","").capitalize(),
                                     "B176": parsed_data["sec9"].get("B176",""),
-                                    "B183": parsed_data["sec9"].get("B183",""),
-                                    "B189": parsed_data["sec9"].get("B189","")
+                                    "B183": parsed_data["sec9"].get("B183","")
                                 }
                                 
                                 for addr, val in cell_map_e.items():
                                     if not val: continue
-                                    if addr in ["B183", "B189"] and "±" not in val:
+                                    if addr in ["B183"] and "±" not in val:
                                         num = re.search(r'([\d\.]+)', val)
                                         if num:
                                             suffix = "0.01" if addr == "B183" else "0.005"
@@ -1539,8 +1542,13 @@ with col_btn:
                                 fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
                                 fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
+                                refract = parsed_data["sec9"].get("B189", "").replace("(20℃)", "")
+                                r_match = re.search(r'([\d\.]+)', refract)
+                                
                                 if refractive_index_input:
                                     safe_write_force(dest_ws, 189, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
+                                else:
+                                    safe_write_force(dest_ws, 189, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
                                 s14 = parsed_data["sec14"]
                                 
@@ -1719,7 +1727,6 @@ with col_btn:
                                 today_str = datetime.now().strftime("%Y.%m.%d")
                                 safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지 복원 로직: HP(E)에도 쓰레기 이미지 필터링 완벽 적용 및 동기화]
                             if option in ["CFF(K)", "HP(K)", "CFF(E)", "HP(E)"]:
                                 collected_pil_images = []
                                 page = doc[0]
@@ -1731,7 +1738,6 @@ with col_btn:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         
-                                        # HP 모드일 때만 배너 등 파란색/비정사각형 쓰레기 이미지를 필터링
                                         if option in ["HP(K)", "HP(E)"]:
                                             if is_blue_dominant(pil_img): continue
                                             w, h = pil_img.size
