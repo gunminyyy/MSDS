@@ -193,7 +193,7 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
                 safe_write_force(ws, current_row, 4, "자료없음", center=False)
-            elif "E" in mode and current_row in [24, 25, 38, 50, 64, 70]:
+            elif "E" in mode and current_row in [24, 38, 50, 64, 70]:
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
                 safe_write_force(ws, current_row, 4, "no data available", center=False)
@@ -679,7 +679,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         s8_raw = re.sub(r'(?i)^.*TLV\s*', '', s8_raw).strip()
         s8_clean = re.sub(r'[○•\-\*]+', '', s8_raw).strip()
         
-        # [수정] 대괄호 기호만 제거 (내용은 유지)
         s8_clean = s8_clean.replace("[", "").replace("]", "")
         
         s8 = {}
@@ -712,7 +711,11 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         sg_val = find_val_in_sec9(sec9_lines, "Specific gravity")
         g_m = re.search(r'([\d\.]+)', sg_val)
         s9["B183"] = f"{g_m.group(1)} ± 0.010" if g_m else ""
-        s9["B189"] = "± 0.005"
+        
+        # [수정] HP(E) 굴절률 추출 로직 복원 (파싱)
+        b189_raw = find_val_in_sec9(sec9_lines, "Refractive index")
+        s9["B189"] = b189_raw.replace("(20℃)", "").strip()
+        
         result["sec9"] = s9
 
         s14 = {}
@@ -831,7 +834,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         s8_154_raw = extract_section_smart(all_lines, "Internal regulations", "ACGIH regulations", mode)
         s8_156_raw = extract_section_smart(all_lines, "ACGIH regulations", "Biological exposure", mode)
         
-        # [수정] 대괄호 기호만 제거 (내용은 유지)
         s8["B154"] = s8_154_raw.replace("[", "").replace("]", "")
         s8["B156"] = s8_156_raw.replace("[", "").replace("]", "")
         result["sec8"] = s8
@@ -1296,8 +1298,6 @@ with col_btn:
                             res = []
                             cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
                             for r in range(s_r, e_r + 1):
-                                if ws.row_dimensions[r].hidden: 
-                                    continue
                                 cas = ws.cell(row=r, column=cas_col).value
                                 conc = ws.cell(row=r, column=conc_col).value
                                 if cas and str(cas).strip():
@@ -1390,8 +1390,7 @@ with col_btn:
                                     "B150": sd.get("B150",""),
                                     "B170": parsed_data["sec9"].get("B170",""),
                                     "B176": parsed_data["sec9"].get("B176",""),
-                                    "B183": parsed_data["sec9"].get("B183",""),
-                                    "B189": parsed_data["sec9"].get("B189","")
+                                    "B183": parsed_data["sec9"].get("B183","")
                                 }
                                 
                                 for addr, val in cell_map_e.items():
@@ -1422,8 +1421,14 @@ with col_btn:
                                 fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
                                 fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
+                                # [수정: HP(E) 굴절률(B189) 단독 처리 로직 복구]
+                                refract = parsed_data["sec9"].get("B189", "").replace("(20℃)", "")
+                                r_match = re.search(r'([\d\.]+)', refract)
+                                
                                 if refractive_index_input:
                                     safe_write_force(dest_ws, 189, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
+                                else:
+                                    safe_write_force(dest_ws, 189, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
                                 s14 = parsed_data["sec14"]
                                 
