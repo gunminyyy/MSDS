@@ -712,9 +712,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         g_m = re.search(r'([\d\.]+)', sg_val)
         s9["B183"] = f"{g_m.group(1)} ± 0.010" if g_m else ""
         
-        b189_raw = find_val_in_sec9(sec9_lines, "Refractive index")
-        s9["B189"] = b189_raw.replace("(20℃)", "").strip()
-        
         result["sec9"] = s9
 
         s14 = {}
@@ -1425,13 +1422,8 @@ with col_btn:
                                 fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
                                 fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
-                                refract = parsed_data["sec9"].get("B189", "").replace("(20℃)", "")
-                                r_match = re.search(r'([\d\.]+)', refract)
-                                
                                 if refractive_index_input:
                                     safe_write_force(dest_ws, 189, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
-                                else:
-                                    safe_write_force(dest_ws, 189, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
                                 s14 = parsed_data["sec14"]
                                 
@@ -1501,13 +1493,12 @@ with col_btn:
                                     "B150": sd.get("B150",""),
                                     "B170": parsed_data["sec9"].get("B170","").capitalize(),
                                     "B176": parsed_data["sec9"].get("B176",""),
-                                    "B183": parsed_data["sec9"].get("B183",""),
-                                    "B189": parsed_data["sec9"].get("B189","")
+                                    "B183": parsed_data["sec9"].get("B183","")
                                 }
                                 
                                 for addr, val in cell_map_e.items():
                                     if not val: continue
-                                    if addr in ["B183", "B189"] and "±" not in val:
+                                    if addr in ["B183"] and "±" not in val:
                                         num = re.search(r'([\d\.]+)', val)
                                         if num:
                                             suffix = "0.01" if addr == "B183" else "0.005"
@@ -1542,13 +1533,8 @@ with col_btn:
                                 fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
                                 fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
-                                refract = parsed_data["sec9"].get("B189", "").replace("(20℃)", "")
-                                r_match = re.search(r'([\d\.]+)', refract)
-                                
                                 if refractive_index_input:
                                     safe_write_force(dest_ws, 189, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
-                                else:
-                                    safe_write_force(dest_ws, 189, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
 
                                 s14 = parsed_data["sec14"]
                                 
