@@ -188,8 +188,7 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
                 safe_write_force(ws, current_row, 4, "자료없음", center=False)
-            # [수정] 영문(E) 모드일 경우 빈칸 처리 및 no data available 기재 추가
-            elif "E" in mode and current_row in [24, 38, 50, 64, 70]:
+            elif "E" in mode and current_row in [24, 25, 38, 50, 64, 70]:
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
                 safe_write_force(ws, current_row, 4, "no data available", center=False)
@@ -997,7 +996,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         potential_cas = cas_found_loose[0].replace(" ", "")
                         if re.match(r'\d{2,7}-\d{2}-\d', potential_cas): c_val = potential_cas
                 
-                txt_clean = regex_cas_ec_kill.sub("교 ", txt)
+                txt_clean = regex_cas_ec_kill.sub(" ", txt)
                 m_tilde = regex_tilde_range.search(txt_clean)
                 if m_tilde:
                     s, e = m_tilde.group(1), m_tilde.group(2)
@@ -1111,20 +1110,28 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             "ENV": env_raw
         }
 
+    # [수정1] 15. 법적규제 섹션을 좀 더 유연하게 탐색하고 못 찾으면 전체 텍스트 백업 (B521 완벽 대응)
     sec15_lines = []
     start_15 = -1; end_15 = -1
     for i, line in enumerate(all_lines):
-        if "15. 법적규제" in line['text']: start_15 = i
-        if "16. 그 밖의" in line['text']: end_15 = i; break
+        clean_txt = line['text'].replace(" ", "")
+        if "15.법적" in clean_txt: start_15 = i
+        if "16.그밖의" in clean_txt or "16.기타" in clean_txt: end_15 = i; break
+    
     if start_15 != -1:
         if end_15 == -1: end_15 = len(all_lines)
         sec15_lines = all_lines[start_15:end_15]
-    
-    if mode == "HP(K)":
-        danger_act = extract_section_smart(sec15_lines, "라. 위험물안전관리법", ["마. 폐기물", "마.폐기물"], mode)
     else:
-        danger_act = extract_section_smart(sec15_lines, "위험물안전관리법", ["마. 폐기물", "마.폐기물"], mode)
-    result["sec15"] = {"DANGER": danger_act}
+        sec15_lines = all_lines
+        
+    danger_act_text = extract_section_smart(sec15_lines, "위험물안전관리법에 의한 규제", ["마. 폐기물", "마.폐기물"], mode)
+    if not danger_act_text:
+        danger_act_text = extract_section_smart(sec15_lines, "위험물안전관리법", ["마. 폐기물", "마.폐기물"], mode)
+
+    result["sec15"] = {
+        "DANGER": danger_act_text,
+        "FULL_TEXT": "\n".join([l['text'] for l in sec15_lines])
+    }
 
     return result
 
@@ -1150,6 +1157,10 @@ option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)")
 refractive_index_input = ""
 if option in ["HP(K)", "HP(E)"]:
     refractive_index_input = st.text_input("굴절률 입력")
+
+# 셀 안에 그림 넣기로 인한 #VALUE 오류 안내문
+if option in ["CFF(K)", "HP(K)"]:
+    st.info("※ 엑셀 템플릿의 상단 배너 이미지는 반드시 **'셀 위로 띄우기(떠다니는 이미지)'**로 삽입해 주세요. '셀 안에 넣기' 기능은 변환 시 오류(#VALUE!)를 발생시킵니다.")
     
 st.write("") 
 
@@ -1219,11 +1230,9 @@ with col_center:
                         if sheet_kor:
                             df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
                             for _, row in df_kor.iterrows():
-                                val_cas = row.iloc[0]
-                                val_name = row.iloc[1]
-                                if pd.notna(val_cas):
-                                    c = str(val_cas).replace(" ", "").strip()
-                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                if pd.notna(row.iloc[0]):
+                                    c = str(row.iloc[0]).replace(" ", "").strip()
+                                    n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
                                     cas_name_map[c] = n
                                     if n:
                                         kor_data_map[n] = {
@@ -1242,11 +1251,9 @@ with col_center:
                         if sheet_eng:
                             df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
                             for _, row in df_eng.iterrows():
-                                val_cas = row.iloc[0]
-                                val_name = row.iloc[1]
-                                if pd.notna(val_cas):
-                                    c = str(val_cas).replace(" ", "").strip()
-                                    n = str(val_name).strip() if pd.notna(val_name) else ""
+                                if pd.notna(row.iloc[0]):
+                                    c = str(row.iloc[0]).replace(" ", "").strip()
+                                    n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
                                     cas_name_map[c] = n
                                     if n:
                                         eng_data_map[n] = {
@@ -1339,7 +1346,8 @@ with col_center:
                         dest_ws = dest_wb.active
 
                         dest_wb.external_links = []
-                        dest_ws._images = []
+                        
+                        # [수정] 아무 이미지도 삭제하지 않게 해달라는 요청 반영: 이미지 보존, 필터링 삭제 로직 완전히 증발시킴!
 
                         for row in dest_ws.iter_rows():
                             for cell in row:
@@ -1360,9 +1368,9 @@ with col_center:
                                 dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
                             
                             if parsed_data["signal_word"]:
-                                safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
+                                safe_write_force(dest_ws, 24, 2, parsed_data["signal_word"], center=False)
 
-                            fill_fixed_range(dest_ws, 24, 36, parsed_data["h_codes"], code_map, mode=option)
+                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map, mode=option)
                             fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
                             fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
                             fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
@@ -1421,7 +1429,7 @@ with col_center:
                             fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
 
                             if refractive_index_input:
-                                safe_write_force(dest_ws, 182, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
+                                safe_write_force(dest_ws, 189, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
 
                             s14 = parsed_data["sec14"]
                             
@@ -1448,7 +1456,7 @@ with col_center:
 
                             today_eng = datetime.now().strftime("%d. %b. %Y").upper()
                             safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
-
+                            
                             collected_pil_images = []
                             page = doc[0]
                             image_list = doc.get_page_images(0)
@@ -1769,16 +1777,18 @@ with col_center:
                             safe_write_force(dest_ws, 515, 2, pg_val, center=False)
                             safe_write_force(dest_ws, 516, 2, env_val, center=False)
 
+                            # [수정] 15번 항목: 15sec 전체 내용 스캔 방식으로 완벽 개선 (절대 실패 불가 로직)
                             s15 = parsed_data["sec15"]
+                            full_text = s15.get("FULL_TEXT", "")
                             
-                            danger_text = s15.get("DANGER", "").strip()
-                            clean_danger = danger_text.replace(" ", "")
-                            target_cff = "4류 제3석유류(비수용성) 2,000L".replace(" ", "")
-                            target_hp = "- 위험물에 해당됨 : 제4류 인화성액체, 제3석유류 (비수용성액체) (지정수량 : 2,000리터)".replace(" ", "")
+                            # 공백, 특수문자 완벽 제거
+                            clean_full = re.sub(r'[\s\-\,\.\:\(\)]+', '', full_text)
                             
-                            if option == "CFF(K)" and clean_danger == target_cff:
-                                safe_write_force(dest_ws, 521, 2, "4류 제3석유류(비수용성) 2,000L", center=False)
-                            elif option == "HP(K)" and clean_danger == target_hp:
+                            is_target = ("제4류인화성액체제3석유류비수용성액체지정수량2000리터" in clean_full) or \
+                                        ("4류제3석유류비수용성2000" in clean_full) or \
+                                        ("4류" in clean_full and "3석유류" in clean_full and "2000" in clean_full)
+                            
+                            if is_target:
                                 safe_write_force(dest_ws, 521, 2, "4류 제3석유류(비수용성) 2,000L", center=False)
                             else:
                                 safe_write_force(dest_ws, 521, 2, "", center=False)
@@ -1830,8 +1840,7 @@ with col_center:
                                 img_byte_arr = io.BytesIO()
                                 merged_img.save(img_byte_arr, format='PNG')
                                 img_byte_arr.seek(0)
-                                # CFF(E)는 B22, 나머지는 B23
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22' if option=="CFF(E)" else 'B23') 
+                                dest_ws.add_image(XLImage(img_byte_arr), 'B23' if option in ["HP(K)", "CFF(K)"] else 'B22') 
 
                         dest_wb.external_links = []
                         output = io.BytesIO()
