@@ -1110,766 +1110,754 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             "ENV": env_raw
         }
 
-    # [수정1] 15. 법적규제 섹션을 좀 더 유연하게 탐색하고 못 찾으면 전체 텍스트 백업 (B521 완벽 대응)
-    sec15_lines = []
-    start_15 = -1; end_15 = -1
-    for i, line in enumerate(all_lines):
-        clean_txt = line['text'].replace(" ", "")
-        if "15.법적" in clean_txt: start_15 = i
-        if "16.그밖의" in clean_txt or "16.기타" in clean_txt: end_15 = i; break
-    
-    if start_15 != -1:
-        if end_15 == -1: end_15 = len(all_lines)
-        sec15_lines = all_lines[start_15:end_15]
-    else:
-        sec15_lines = all_lines
-        
-    danger_act_text = extract_section_smart(sec15_lines, "위험물안전관리법에 의한 규제", ["마. 폐기물", "마.폐기물"], mode)
-    if not danger_act_text:
-        danger_act_text = extract_section_smart(sec15_lines, "위험물안전관리법", ["마. 폐기물", "마.폐기물"], mode)
-
-    result["sec15"] = {
-        "DANGER": danger_act_text,
-        "FULL_TEXT": "\n".join([l['text'] for l in sec15_lines])
-    }
-
     return result
 
 # --------------------------------------------------------------------------
 # [4. 메인 실행 구역]
 # --------------------------------------------------------------------------
-with st.expander("📂 필수 파일 업로드", expanded=True):
-    col1, col2 = st.columns(2)
-    with col1:
-        master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
-        loaded_refs, folder_exists = get_reference_images()
-        if folder_exists and loaded_refs:
-            st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
-        elif not folder_exists:
-            st.warning("⚠️ 'reference_imgs' 폴더 필요")
+st.markdown("### 📂 필수 파일 업로드 및 설정")
+col1, col2 = st.columns(2)
+with col1:
+    master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
+    loaded_refs, folder_exists = get_reference_images()
+    if folder_exists and loaded_refs:
+        st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
+    elif not folder_exists:
+        st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
-    with col2:
-        template_file = st.file_uploader("2. 양식 파일 (GHS MSDS 양식)", type="xlsx")
+with col2:
+    uploaded_files = st.file_uploader("2. 원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
 
-product_name_input = st.text_input("제품명 입력")
-option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
-
-refractive_index_input = ""
-if option in ["HP(K)", "HP(E)"]:
-    refractive_index_input = st.text_input("굴절률 입력")
-
-# 셀 안에 그림 넣기로 인한 #VALUE 오류 안내문
-if option in ["CFF(K)", "HP(K)"]:
-    st.info("※ 엑셀 템플릿의 상단 배너 이미지는 반드시 **'셀 위로 띄우기(떠다니는 이미지)'**로 삽입해 주세요. '셀 안에 넣기' 기능은 변환 시 오류(#VALUE!)를 발생시킵니다.")
-    
-st.write("") 
-
+st.write("")
+c1, c2, c3 = st.columns(3)
+with c1:
+    product_name_input = st.text_input("제품명 입력")
+with c2:
+    option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
+with c3:
+    refractive_index_input = ""
+    if option in ["HP(K)", "HP(E)"]:
+        refractive_index_input = st.text_input("굴절률 입력")
+        
 kor_excel_file = None
 kor_form_version = "신버전 (코드 B25~, 물질 80~122행)"
 
 if option in ["CFF(E)", "HP(E)"]:
     st.markdown("---")
     st.markdown("💡 **(선택) 영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
-    c3, c4 = st.columns(2)
-    with c3:
-        kor_excel_file = st.file_uploader("3. 국문 엑셀 파일 (선택)", type="xlsx")
+    c4, c5 = st.columns(2)
     with c4:
+        kor_excel_file = st.file_uploader("3. 국문 엑셀 파일 (선택)", type="xlsx")
+    with c5:
         kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~150, 물질 추출)"])
 
-col_left, col_center, col_right = st.columns([4, 2, 4])
+st.markdown("---")
 
 if 'converted_files' not in st.session_state:
     st.session_state['converted_files'] = []
     st.session_state['download_data'] = {}
 
-with col_left:
-    st.subheader("3. 원본 파일 업로드")
-    uploaded_files = st.file_uploader("원본 데이터(PDF)", type=["pdf"], accept_multiple_files=True)
+col_btn, col_dl = st.columns(2)
 
-with col_center:
-    st.write("") ; st.write("") ; st.write("")
-    
-    if st.button("▶ 변환 시작", use_container_width=True):
-        if uploaded_files and master_data_file and template_file:
-            with st.spinner(f"{option} 모드로 변환 중..."):
+with col_btn:
+    st.subheader("▶ 변환 실행")
+    st.write("") 
+    if st.button("변환 시작", use_container_width=True):
+        if uploaded_files and master_data_file:
+            # 템플릿 파일 자동 선택 로직
+            if option in ["CFF(E)", "HP(E)"]:
+                template_path = os.path.join("templates", "MSDS 영문.xlsx")
+            else:
+                template_path = os.path.join("templates", "MSDS 국문.xlsx")
                 
-                new_files = []
-                new_download_data = {}
-                
-                code_map = {} 
-                cas_name_map = {} 
-                kor_data_map = {} 
-                eng_data_map = {} 
-                
-                try:
-                    master_data_file.seek(0)
-                    file_bytes = master_data_file.read()
-                    xls = pd.ExcelFile(io.BytesIO(file_bytes))
+            if not os.path.exists(template_path):
+                st.error(f"오류: '{template_path}' 파일을 찾을 수 없습니다. 'templates' 폴더 안에 파일을 넣어주세요.")
+            else:
+                with st.spinner(f"{option} 모드로 변환 중..."):
                     
-                    target_sheet = None
-                    for sheet in xls.sheet_names:
-                        if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
+                    new_files = []
+                    new_download_data = {}
                     
-                    if target_sheet:
-                        df_code = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet)
-                        if "K" in option:
-                            target_col_idx = 1
-                        else:
-                            target_col_idx = 2
-                        
-                        for _, row in df_code.iterrows():
-                            if pd.notna(row.iloc[0]):
-                                code_key = str(row.iloc[0]).replace(" ","").upper().strip()
-                                val = row.iloc[target_col_idx]
-                                code_map[code_key] = str(val).strip() if pd.notna(val) else ""
+                    code_map = {} 
+                    cas_name_map = {} 
+                    kor_data_map = {} 
+                    eng_data_map = {} 
                     
-                    if "K" in option:
-                        sheet_kor = None
-                        for sheet in xls.sheet_names:
-                            if "국문" in sheet: sheet_kor = sheet; break
-                        if sheet_kor:
-                            df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
-                            for _, row in df_kor.iterrows():
-                                if pd.notna(row.iloc[0]):
-                                    c = str(row.iloc[0]).replace(" ", "").strip()
-                                    n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-                                    cas_name_map[c] = n
-                                    if n:
-                                        kor_data_map[n] = {
-                                            'F': str(row.iloc[5]) if len(row) > 5 else "", 
-                                            'G': str(row.iloc[6]) if len(row) > 6 else "", 
-                                            'H': str(row.iloc[7]) if len(row) > 7 else "",
-                                            'P': str(row.iloc[15]) if len(row) > 15 else "", 
-                                            'T': str(row.iloc[19]) if len(row) > 19 else "", 
-                                            'U': str(row.iloc[20]) if len(row) > 20 else "", 
-                                            'V': str(row.iloc[21]) if len(row) > 21 else ""
-                                        }
-                    else: # E 모드 (CFF E 등)
-                        sheet_eng = None
-                        for sheet in xls.sheet_names:
-                            if "영문" in sheet: sheet_eng = sheet; break
-                        if sheet_eng:
-                            df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
-                            for _, row in df_eng.iterrows():
-                                if pd.notna(row.iloc[0]):
-                                    c = str(row.iloc[0]).replace(" ", "").strip()
-                                    n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-                                    cas_name_map[c] = n
-                                    if n:
-                                        eng_data_map[n] = {
-                                            'F': str(row.iloc[5]) if len(row) > 5 else "", 
-                                            'G': str(row.iloc[6]) if len(row) > 6 else "", 
-                                            'H': str(row.iloc[7]) if len(row) > 7 else "",
-                                            'P': str(row.iloc[15]) if len(row) > 15 else "", 
-                                            'Q': str(row.iloc[16]) if len(row) > 16 else "", 
-                                            'T': str(row.iloc[19]) if len(row) > 19 else "", 
-                                            'U': str(row.iloc[20]) if len(row) > 20 else "", 
-                                            'V': str(row.iloc[21]) if len(row) > 21 else ""
-                                        }
-
-                except Exception as e:
-                    st.error(f"데이터 로드 오류: {e}")
-
-                kor_override_data = None
-                if option in ["CFF(E)", "HP(E)"] and kor_excel_file is not None:
-                    kor_excel_file.seek(0)
-                    kor_wb = load_workbook(io.BytesIO(kor_excel_file.read()), data_only=True)
-                    kor_ws = kor_wb.active
-                    kor_override_data = {
-                        "h_codes": [], "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
-                        "composition_data": []
-                    }
-                    
-                    def ext_codes(ws, s_r, e_r, col=2):
-                        res = []
-                        regex = re.compile(r"([HP]\d{3}(?:\+[HP]\d{3})*)")
-                        for r in range(s_r, e_r + 1):
-                            if ws.row_dimensions[r].hidden: 
-                                continue
-                            val = ws.cell(row=r, column=col).value
-                            if val:
-                                val_str = str(val).strip().upper()
-                                if re.match(r'^[HP]\s?\d{3}', val_str):
-                                    matches = regex.findall(val_str.replace(" ", ""))
-                                    for m in matches:
-                                        if m not in res: res.append(m)
-                        return res
-
-                    def ext_comp(ws, s_r, e_r, cas_col=4, conc_col=6):
-                        res = []
-                        cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
-                        for r in range(s_r, e_r + 1):
-                            if ws.row_dimensions[r].hidden: 
-                                continue
-                            cas = ws.cell(row=r, column=cas_col).value
-                            conc = ws.cell(row=r, column=conc_col).value
-                            if cas and str(cas).strip():
-                                c_val = str(cas).strip()
-                                cn_val = str(conc).strip() if conc else ""
-                                match = cas_regex.search(c_val)
-                                if match:
-                                    c_val_clean = match.group(1).replace(" ", "")
-                                    res.append((c_val_clean, cn_val))
-                        return res
-
-                    if "신버전" in kor_form_version:
-                        kor_override_data["h_codes"] = ext_codes(kor_ws, 25, 36)
-                        kor_override_data["p_prev"] = ext_codes(kor_ws, 38, 49)
-                        kor_override_data["p_resp"] = ext_codes(kor_ws, 50, 63)
-                        kor_override_data["p_stor"] = ext_codes(kor_ws, 64, 69)
-                        kor_override_data["p_disp"] = ext_codes(kor_ws, 70, 72)
-                        kor_override_data["composition_data"] = ext_comp(kor_ws, 80, 122)
-                    else:
-                        all_c = ext_codes(kor_ws, 25, 70)
-                        kor_override_data["h_codes"] = [c for c in all_c if c.startswith('H')]
-                        kor_override_data["p_prev"] = [c for c in all_c if c.startswith('P2')]
-                        kor_override_data["p_resp"] = [c for c in all_c if c.startswith('P3')]
-                        kor_override_data["p_stor"] = [c for c in all_c if c.startswith('P4')]
-                        kor_override_data["p_disp"] = [c for c in all_c if c.startswith('P5')]
-                        kor_override_data["composition_data"] = ext_comp(kor_ws, 25, 150)
-
-                for uploaded_file in uploaded_files:
                     try:
-                        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                        parsed_data = parse_pdf_final(doc, mode=option)
+                        master_data_file.seek(0)
+                        file_bytes = master_data_file.read()
+                        xls = pd.ExcelFile(io.BytesIO(file_bytes))
                         
-                        if option in ["CFF(E)", "HP(E)"] and kor_override_data:
-                            parsed_data["h_codes"] = kor_override_data["h_codes"]
-                            parsed_data["p_prev"] = kor_override_data["p_prev"]
-                            parsed_data["p_resp"] = kor_override_data["p_resp"]
-                            parsed_data["p_stor"] = kor_override_data["p_stor"]
-                            parsed_data["p_disp"] = kor_override_data["p_disp"]
-                            parsed_data["composition_data"] = kor_override_data["composition_data"]
+                        target_sheet = None
+                        for sheet in xls.sheet_names:
+                            if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
                         
-                        template_file.seek(0)
-                        dest_wb = load_workbook(io.BytesIO(template_file.read()))
-                        dest_ws = dest_wb.active
-
-                        dest_wb.external_links = []
+                        if target_sheet:
+                            df_code = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet)
+                            if "K" in option:
+                                target_col_idx = 1
+                            else:
+                                target_col_idx = 2
+                            
+                            for _, row in df_code.iterrows():
+                                if pd.notna(row.iloc[0]):
+                                    code_key = str(row.iloc[0]).replace(" ","").upper().strip()
+                                    val = row.iloc[target_col_idx]
+                                    code_map[code_key] = str(val).strip() if pd.notna(val) else ""
                         
-                        # [수정] 아무 이미지도 삭제하지 않게 해달라는 요청 반영: 이미지 보존, 필터링 삭제 로직 완전히 증발시킴!
+                        if "K" in option:
+                            sheet_kor = None
+                            for sheet in xls.sheet_names:
+                                if "국문" in sheet: sheet_kor = sheet; break
+                            if sheet_kor:
+                                df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
+                                for _, row in df_kor.iterrows():
+                                    if pd.notna(row.iloc[0]):
+                                        c = str(row.iloc[0]).replace(" ", "").strip()
+                                        n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+                                        cas_name_map[c] = n
+                                        if n:
+                                            kor_data_map[n] = {
+                                                'F': str(row.iloc[5]) if len(row) > 5 else "", 
+                                                'G': str(row.iloc[6]) if len(row) > 6 else "", 
+                                                'H': str(row.iloc[7]) if len(row) > 7 else "",
+                                                'P': str(row.iloc[15]) if len(row) > 15 else "", 
+                                                'T': str(row.iloc[19]) if len(row) > 19 else "", 
+                                                'U': str(row.iloc[20]) if len(row) > 20 else "", 
+                                                'V': str(row.iloc[21]) if len(row) > 21 else ""
+                                            }
+                        else: # E 모드 (CFF E 등)
+                            sheet_eng = None
+                            for sheet in xls.sheet_names:
+                                if "영문" in sheet: sheet_eng = sheet; break
+                            if sheet_eng:
+                                df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
+                                for _, row in df_eng.iterrows():
+                                    if pd.notna(row.iloc[0]):
+                                        c = str(row.iloc[0]).replace(" ", "").strip()
+                                        n = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+                                        cas_name_map[c] = n
+                                        if n:
+                                            eng_data_map[n] = {
+                                                'F': str(row.iloc[5]) if len(row) > 5 else "", 
+                                                'G': str(row.iloc[6]) if len(row) > 6 else "", 
+                                                'H': str(row.iloc[7]) if len(row) > 7 else "",
+                                                'P': str(row.iloc[15]) if len(row) > 15 else "", 
+                                                'Q': str(row.iloc[16]) if len(row) > 16 else "", 
+                                                'T': str(row.iloc[19]) if len(row) > 19 else "", 
+                                                'U': str(row.iloc[20]) if len(row) > 20 else "", 
+                                                'V': str(row.iloc[21]) if len(row) > 21 else ""
+                                            }
 
-                        for row in dest_ws.iter_rows():
-                            for cell in row:
-                                if isinstance(cell, MergedCell): continue
-                                if cell.column == 2 and cell.data_type == 'f': cell.value = ""
+                    except Exception as e:
+                        st.error(f"데이터 로드 오류: {e}")
 
-                        if option == "HP(E)":
-                            dest_ws['A50'].alignment = ALIGN_LEFT
-                            dest_ws['A64'].alignment = ALIGN_LEFT
-                            dest_ws['A70'].alignment = ALIGN_LEFT
-                            
-                            safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
-                            safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
-                            
-                            if parsed_data["hazard_cls"]:
-                                clean_cls = "\n".join(parsed_data["hazard_cls"])
-                                safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
-                                dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
-                            
-                            if parsed_data["signal_word"]:
-                                safe_write_force(dest_ws, 24, 2, parsed_data["signal_word"], center=False)
+                    kor_override_data = None
+                    if option in ["CFF(E)", "HP(E)"] and kor_excel_file is not None:
+                        kor_excel_file.seek(0)
+                        kor_wb = load_workbook(io.BytesIO(kor_excel_file.read()), data_only=True)
+                        kor_ws = kor_wb.active
+                        kor_override_data = {
+                            "h_codes": [], "p_prev": [], "p_resp": [], "p_stor": [], "p_disp": [],
+                            "composition_data": []
+                        }
+                        
+                        def ext_codes(ws, s_r, e_r, col=2):
+                            res = []
+                            regex = re.compile(r"([HP]\d{3}(?:\+[HP]\d{3})*)")
+                            for r in range(s_r, e_r + 1):
+                                if ws.row_dimensions[r].hidden: 
+                                    continue
+                                val = ws.cell(row=r, column=col).value
+                                if val:
+                                    val_str = str(val).strip().upper()
+                                    if re.match(r'^[HP]\s?\d{3}', val_str):
+                                        matches = regex.findall(val_str.replace(" ", ""))
+                                        for m in matches:
+                                            if m not in res: res.append(m)
+                            return res
 
-                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map, mode=option)
-                            
-                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
-                            
-                            active_substances = []
-                            for c_data in parsed_data["composition_data"]:
-                                cas = c_data[0].replace(" ", "").strip()
-                                if cas in cas_name_map:
-                                    name = cas_name_map[cas]
-                                    if name: active_substances.append(name)
-                                    
-                            sd = parsed_data["sec4_to_7"]
-                            cell_map_e = {
-                                "B126": sd.get("B126",""), 
-                                "B127": sd.get("B127",""), "B128": sd.get("B128",""),
-                                "B129": sd.get("B129",""), "B132": sd.get("B132",""),
-                                "B134": sd.get("B134",""), "B136": sd.get("B136",""),
-                                "B140": sd.get("B140",""), "B142": sd.get("B142",""),
-                                "B144": sd.get("B144",""), "B148": sd.get("B148",""),
-                                "B150": sd.get("B150",""),
-                                "B170": parsed_data["sec9"].get("B170",""),
-                                "B176": parsed_data["sec9"].get("B176",""),
-                                "B183": parsed_data["sec9"].get("B183",""),
-                                "B189": parsed_data["sec9"].get("B189","")
-                            }
-                            
-                            for addr, val in cell_map_e.items():
-                                if not val: continue
-                                formatted, h = format_and_calc_height_sec47(val, mode=option)
-                                r_idx = int(re.search(r'\d+', addr).group())
-                                safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
-                                dest_ws.row_dimensions[r_idx].height = h
+                        def ext_comp(ws, s_r, e_r, cas_col=4, conc_col=6):
+                            res = []
+                            cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
+                            for r in range(s_r, e_r + 1):
+                                if ws.row_dimensions[r].hidden: 
+                                    continue
+                                cas = ws.cell(row=r, column=cas_col).value
+                                conc = ws.cell(row=r, column=conc_col).value
+                                if cas and str(cas).strip():
+                                    c_val = str(cas).strip()
+                                    cn_val = str(conc).strip() if conc else ""
+                                    match = cas_regex.search(c_val)
+                                    if match:
+                                        c_val_clean = match.group(1).replace(" ", "")
+                                        res.append((c_val_clean, cn_val))
+                            return res
 
-                            s8 = parsed_data["sec8"]
-                            if "B156" in s8:
-                                safe_write_force(dest_ws, 156, 2, s8["B156"], center=False)
+                        if "신버전" in kor_form_version:
+                            kor_override_data["h_codes"] = ext_codes(kor_ws, 25, 36)
+                            kor_override_data["p_prev"] = ext_codes(kor_ws, 38, 49)
+                            kor_override_data["p_resp"] = ext_codes(kor_ws, 50, 63)
+                            kor_override_data["p_stor"] = ext_codes(kor_ws, 64, 69)
+                            kor_override_data["p_disp"] = ext_codes(kor_ws, 70, 72)
+                            kor_override_data["composition_data"] = ext_comp(kor_ws, 80, 122)
+                        else:
+                            all_c = ext_codes(kor_ws, 25, 70)
+                            kor_override_data["h_codes"] = [c for c in all_c if c.startswith('H')]
+                            kor_override_data["p_prev"] = [c for c in all_c if c.startswith('P2')]
+                            kor_override_data["p_resp"] = [c for c in all_c if c.startswith('P3')]
+                            kor_override_data["p_stor"] = [c for c in all_c if c.startswith('P4')]
+                            kor_override_data["p_disp"] = [c for c in all_c if c.startswith('P5')]
+                            kor_override_data["composition_data"] = ext_comp(kor_ws, 25, 150)
+
+                    for uploaded_file in uploaded_files:
+                        try:
+                            doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+                            parsed_data = parse_pdf_final(doc, mode=option)
+                            
+                            if option in ["CFF(E)", "HP(E)"] and kor_override_data:
+                                parsed_data["h_codes"] = kor_override_data["h_codes"]
+                                parsed_data["p_prev"] = kor_override_data["p_prev"]
+                                parsed_data["p_resp"] = kor_override_data["p_resp"]
+                                parsed_data["p_stor"] = kor_override_data["p_stor"]
+                                parsed_data["p_disp"] = kor_override_data["p_disp"]
+                                parsed_data["composition_data"] = kor_override_data["composition_data"]
+                            
+                            dest_wb = load_workbook(template_path)
+                            dest_ws = dest_wb.active
+
+                            dest_wb.external_links = []
+                            
+                            # [수정1] 어떠한 조건 검사나 필터링 없이 이미지 삭제 코드 자체를 완전히 제거했습니다.
+                            # 이제 템플릿에 들어있는 배너 이미지는 100% 아무런 조작 없이 그대로 보존됩니다.
+
+                            for row in dest_ws.iter_rows():
+                                for cell in row:
+                                    if isinstance(cell, MergedCell): continue
+                                    if cell.column == 2 and cell.data_type == 'f': cell.value = ""
+
+                            if option == "HP(E)":
+                                dest_ws['A50'].alignment = ALIGN_LEFT
+                                dest_ws['A64'].alignment = ALIGN_LEFT
+                                dest_ws['A70'].alignment = ALIGN_LEFT
                                 
-                                safe_write_force(dest_ws, 157, 2, s8["B157"], center=False)
-                                if s8["B157"]: dest_ws.row_dimensions[157].hidden = False
-                                else: dest_ws.row_dimensions[157].hidden = True
+                                safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
+                                safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
                                 
-                                safe_write_force(dest_ws, 158, 2, s8["B158"], center=False)
-                                if s8["B158"]: dest_ws.row_dimensions[158].hidden = False
-                                else: dest_ws.row_dimensions[158].hidden = True
-                            
-                            fill_regulatory_section(dest_ws, 202, 240, active_substances, eng_data_map, 'F', mode=option)
-                            fill_regulatory_section(dest_ws, 242, 279, active_substances, eng_data_map, 'G', mode=option)
-                            fill_regulatory_section(dest_ws, 281, 315, active_substances, eng_data_map, 'H', mode=option)
-                            fill_regulatory_section(dest_ws, 324, 358, active_substances, eng_data_map, 'P', mode=option)
-                            fill_regulatory_section(dest_ws, 360, 395, active_substances, eng_data_map, 'Q', mode=option)
-                            fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T', mode=option)
-                            fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
-                            fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
-
-                            if refractive_index_input:
-                                safe_write_force(dest_ws, 189, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
-
-                            s14 = parsed_data["sec14"]
-                            
-                            un_val = str(s14.get("UN", "")).strip()
-                            if not un_val or un_val.lower() == "not applicable": un_val = "no data available"
-                            
-                            name_val = str(s14.get("NAME", "")).strip()
-                            if not name_val or name_val.lower() == "not applicable": name_val = "no data available"
-                            
-                            class_val = str(s14.get("CLASS", "")).strip()
-                            if not class_val or class_val.lower() == "not applicable": class_val = "Not applicable"
-                            
-                            pg_val = str(s14.get("PG", "")).strip()
-                            if not pg_val or pg_val.lower() == "not applicable": pg_val = "Not applicable"
-                            
-                            env_val = str(s14.get("ENV", "")).strip()
-                            if not env_val or env_val.lower() == "not applicable": env_val = "Not applicable"
-                            
-                            safe_write_force(dest_ws, 531, 2, un_val, center=False)
-                            safe_write_force(dest_ws, 532, 2, name_val, center=False)
-                            safe_write_force(dest_ws, 533, 2, class_val, center=False)
-                            safe_write_force(dest_ws, 534, 2, pg_val, center=False)
-                            safe_write_force(dest_ws, 535, 2, env_val, center=False)
-
-                            today_eng = datetime.now().strftime("%d. %b. %Y").upper()
-                            safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
-                            
-                            collected_pil_images = []
-                            page = doc[0]
-                            image_list = doc.get_page_images(0)
-                            
-                            for img_info in image_list:
-                                xref = img_info[0]
-                                try:
-                                    base_image = doc.extract_image(xref)
-                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                    
-                                    if is_blue_dominant(pil_img): continue
-                                    w, h = pil_img.size
-                                    if not is_square_shaped(w, h): continue
-
-                                    if loaded_refs:
-                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode="HP(K)")
-                                        if matched_name:
-                                            clean_img = loaded_refs[matched_name]
-                                            collected_pil_images.append((extract_number(matched_name), clean_img))
-                                except: continue
-                            
-                            unique_images = {}
-                            for key, img in collected_pil_images:
-                                if key not in unique_images: unique_images[key] = img
-                            
-                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
-
-                            if final_sorted_imgs:
-                                unit_size = 67; icon_size = 60
-                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                                total_width = unit_size * len(final_sorted_imgs)
-                                total_height = unit_size
-                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                for idx, p_img in enumerate(final_sorted_imgs):
-                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                if parsed_data["hazard_cls"]:
+                                    clean_cls = "\n".join(parsed_data["hazard_cls"])
+                                    safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
+                                    dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
                                 
-                                img_byte_arr = io.BytesIO()
-                                merged_img.save(img_byte_arr, format='PNG')
-                                img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
+                                if parsed_data["signal_word"]:
+                                    safe_write_force(dest_ws, 24, 2, parsed_data["signal_word"], center=False)
 
-                        elif option == "CFF(E)":
-                            dest_ws['A50'].alignment = ALIGN_LEFT
-                            dest_ws['A64'].alignment = ALIGN_LEFT
-                            dest_ws['A70'].alignment = ALIGN_LEFT
-                            
-                            safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
-                            safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
-                            
-                            if parsed_data["hazard_cls"]:
-                                clean_cls = "\n".join(parsed_data["hazard_cls"])
-                                safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
-                                dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
-                            
-                            if parsed_data["signal_word"]:
-                                safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
-
-                            fill_fixed_range(dest_ws, 24, 36, parsed_data["h_codes"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map, mode=option)
-                            
-                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
-                            
-                            active_substances = []
-                            for c_data in parsed_data["composition_data"]:
-                                cas = c_data[0].replace(" ", "").strip()
-                                if cas in cas_name_map:
-                                    name = cas_name_map[cas]
-                                    if name: active_substances.append(name)
-                                    
-                            sd = parsed_data["sec4_to_7"]
-                            cell_map_e = {
-                                "B125": sd.get("B125",""), "B126": sd.get("B126",""), 
-                                "B127": sd.get("B127",""), "B128": sd.get("B128",""),
-                                "B129": sd.get("B129",""), "B132": sd.get("B132",""),
-                                "B134": sd.get("B134",""), "B136": sd.get("B136",""),
-                                "B140": sd.get("B140",""), "B142": sd.get("B142",""),
-                                "B144": sd.get("B144",""), "B148": sd.get("B148",""),
-                                "B150": sd.get("B150",""),
-                                "B170": parsed_data["sec9"].get("B170","").capitalize(),
-                                "B176": parsed_data["sec9"].get("B176",""),
-                                "B183": parsed_data["sec9"].get("B183",""),
-                                "B189": parsed_data["sec9"].get("B189","")
-                            }
-                            
-                            for addr, val in cell_map_e.items():
-                                if not val: continue
-                                if addr in ["B183", "B189"] and "±" not in val:
-                                    num = re.search(r'([\d\.]+)', val)
-                                    if num:
-                                        suffix = "0.01" if addr == "B183" else "0.005"
-                                        val = f"{num.group(1)} ± {suffix}"
+                                fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map, mode=option)
                                 
-                                formatted, h = format_and_calc_height_sec47(val, mode=option)
-                                r_idx = int(re.search(r'\d+', addr).group())
-                                safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
-                                dest_ws.row_dimensions[r_idx].height = h
-
-                            s8 = parsed_data["sec8"]
-                            if s8["B154"]:
-                                lines = s8["B154"].split('\n')
-                                safe_write_force(dest_ws, 154, 2, lines[0].lower() if "no data" in lines[0].lower() else lines[0], center=False)
-                                if len(lines) > 1:
-                                    safe_write_force(dest_ws, 155, 2, "\n".join(lines[1:]), center=False)
-                                    dest_ws.row_dimensions[155].hidden = False
-                            
-                            if s8["B156"]:
-                                lines = s8["B156"].split('\n')
-                                safe_write_force(dest_ws, 156, 2, lines[0].lower() if "no data" in lines[0].lower() else lines[0], center=False)
-                                if len(lines) > 1:
-                                    safe_write_force(dest_ws, 157, 2, "\n".join(lines[1:]), center=False)
-                                    dest_ws.row_dimensions[157].hidden = False
-
-                            fill_regulatory_section(dest_ws, 202, 240, active_substances, eng_data_map, 'F', mode=option)
-                            fill_regulatory_section(dest_ws, 242, 279, active_substances, eng_data_map, 'G', mode=option)
-                            fill_regulatory_section(dest_ws, 281, 315, active_substances, eng_data_map, 'H', mode=option)
-                            fill_regulatory_section(dest_ws, 324, 358, active_substances, eng_data_map, 'P', mode=option)
-                            fill_regulatory_section(dest_ws, 360, 395, active_substances, eng_data_map, 'Q', mode=option)
-                            fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T', mode=option)
-                            fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
-                            fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
-
-                            s14 = parsed_data["sec14"]
-                            
-                            un_val = str(s14.get("UN", "")).strip()
-                            if not un_val or un_val.lower() == "not applicable": un_val = "no data available"
-                            
-                            name_val = str(s14.get("NAME", "")).strip()
-                            if not name_val or name_val.lower() == "not applicable": name_val = "no data available"
-                            
-                            class_val = str(s14.get("CLASS", "")).strip()
-                            if not class_val or class_val.lower() == "not applicable": class_val = "Not applicable"
-                            
-                            pg_val = str(s14.get("PG", "")).strip()
-                            if not pg_val or pg_val.lower() == "not applicable": pg_val = "Not applicable"
-                            
-                            env_val = str(s14.get("ENV", "")).strip()
-                            if not env_val or env_val.lower() == "not applicable": env_val = "Not applicable"
-                            
-                            safe_write_force(dest_ws, 531, 2, un_val, center=False)
-                            safe_write_force(dest_ws, 532, 2, name_val, center=False)
-                            safe_write_force(dest_ws, 533, 2, class_val, center=False)
-                            safe_write_force(dest_ws, 534, 2, pg_val, center=False)
-                            safe_write_force(dest_ws, 535, 2, env_val, center=False)
-
-                            today_eng = datetime.now().strftime("%d. %b. %Y").upper()
-                            safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
-                            
-                            collected_pil_images = []
-                            page = doc[0]
-                            image_list = doc.get_page_images(0)
-                            
-                            for img_info in image_list:
-                                xref = img_info[0]
-                                try:
-                                    base_image = doc.extract_image(xref)
-                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                    
-                                    if loaded_refs:
-                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
-                                        if matched_name:
-                                            clean_img = loaded_refs[matched_name]
-                                            collected_pil_images.append((extract_number(matched_name), clean_img))
-                                except: continue
-                            
-                            unique_images = {}
-                            for key, img in collected_pil_images:
-                                if key not in unique_images: unique_images[key] = img
-                            
-                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
-
-                            if final_sorted_imgs:
-                                unit_size = 67; icon_size = 60
-                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                                total_width = unit_size * len(final_sorted_imgs)
-                                total_height = unit_size
-                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                for idx, p_img in enumerate(final_sorted_imgs):
-                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
                                 
-                                img_byte_arr = io.BytesIO()
-                                merged_img.save(img_byte_arr, format='PNG')
-                                img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
+                                active_substances = []
+                                for c_data in parsed_data["composition_data"]:
+                                    cas = c_data[0].replace(" ", "").strip()
+                                    if cas in cas_name_map:
+                                        name = cas_name_map[cas]
+                                        if name: active_substances.append(name)
+                                        
+                                sd = parsed_data["sec4_to_7"]
+                                cell_map_e = {
+                                    "B126": sd.get("B126",""), 
+                                    "B127": sd.get("B127",""), "B128": sd.get("B128",""),
+                                    "B129": sd.get("B129",""), "B132": sd.get("B132",""),
+                                    "B134": sd.get("B134",""), "B136": sd.get("B136",""),
+                                    "B140": sd.get("B140",""), "B142": sd.get("B142",""),
+                                    "B144": sd.get("B144",""), "B148": sd.get("B148",""),
+                                    "B150": sd.get("B150",""),
+                                    "B170": parsed_data["sec9"].get("B170",""),
+                                    "B176": parsed_data["sec9"].get("B176",""),
+                                    "B183": parsed_data["sec9"].get("B183",""),
+                                    "B189": parsed_data["sec9"].get("B189","")
+                                }
+                                
+                                for addr, val in cell_map_e.items():
+                                    if not val: continue
+                                    formatted, h = format_and_calc_height_sec47(val, mode=option)
+                                    r_idx = int(re.search(r'\d+', addr).group())
+                                    safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
+                                    dest_ws.row_dimensions[r_idx].height = h
 
-                        else: # CFF(K) / HP(K)
-                            safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
-                            safe_write_force(dest_ws, 10, 2, product_name_input, center=False)
-                            
-                            if parsed_data["hazard_cls"]:
-                                clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
-                                safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
-                                dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
-                                valid_lines_count = len([line for line in parsed_data["hazard_cls"] if line.strip()])
-                                if valid_lines_count > 0:
-                                    dest_ws.row_dimensions[20].height = valid_lines_count * 14.0
-
-                            signal_final = parsed_data["signal_word"] if parsed_data["signal_word"] else ""
-                            safe_write_force(dest_ws, 24, 2, signal_final, center=False) 
-
-                            if option == "HP(K)":
-                                safe_write_force(dest_ws, 38, 1, "예방", center=False)
-                                safe_write_force(dest_ws, 50, 1, "대응", center=False)
-                                safe_write_force(dest_ws, 64, 1, "저장", center=False)
-                                safe_write_force(dest_ws, 70, 1, "폐기", center=False)
-
-                            fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
-                            fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map, mode=option)
-
-                            fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
-                            
-                            active_substances = []
-                            for c_data in parsed_data["composition_data"]:
-                                cas = c_data[0].replace(" ", "").strip()
-                                if cas in cas_name_map:
-                                    name = cas_name_map[cas]
-                                    if name: active_substances.append(name)
-
-                            sec_data = parsed_data["sec4_to_7"]
-                            for cell_addr, raw_text in sec_data.items():
-                                formatted_txt, row_h = format_and_calc_height_sec47(raw_text, mode=option)
-                                try:
-                                    col_str = re.match(r"([A-Z]+)", cell_addr).group(1)
-                                    row_num = int(re.search(r"(\d+)", cell_addr).group(1))
-                                    col_idx = openpyxl.utils.column_index_from_string(col_str)
-                                    safe_write_force(dest_ws, row_num, col_idx, "")
-                                    if formatted_txt:
-                                        safe_write_force(dest_ws, row_num, col_idx, formatted_txt, center=False)
-                                        dest_ws.row_dimensions[row_num].height = row_h
-                                        try:
-                                            cell_a = dest_ws.cell(row=row_num, column=1)
-                                            if cell_a.value: cell_a.value = str(cell_a.value).strip()
-                                            cell_a.alignment = ALIGN_TITLE
-                                        except: pass
-                                except Exception as e: pass
-
-                            s8 = parsed_data["sec8"]
-                            val148 = s8["B148"].replace("해당없음", "자료없음")
-                            lines148 = [l.strip() for l in val148.split('\n') if l.strip()]
-                            safe_write_force(dest_ws, 148, 2, ""); safe_write_force(dest_ws, 149, 2, ""); dest_ws.row_dimensions[149].hidden = True
-                            if lines148:
-                                safe_write_force(dest_ws, 148, 2, lines148[0], center=False)
-                                if len(lines148) > 1:
-                                    safe_write_force(dest_ws, 149, 2, "\n".join(lines148[1:]), center=False)
-                                    dest_ws.row_dimensions[149].hidden = False
-                            
-                            val150 = s8["B150"].replace("해당없음", "자료없음")
-                            val150 = re.sub(r"^규정[:\s]*", "", val150).strip()
-                            safe_write_force(dest_ws, 150, 2, val150, center=False)
-
-                            s9 = parsed_data["sec9"]
-                            safe_write_force(dest_ws, 163, 2, s9["B163"], center=False)
-                            
-                            if option == "HP(K)":
-                                flash = s9["B169"]
-                                flash_num = re.findall(r'([<>]?\s*\d{2,3})', flash)
-                                safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
-                            else:
-                                flash = s9["B169"]
-                                flash_num = re.findall(r'(\d{2,3})', flash)
-                                safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
-                            
-                            gravity = s9["B176"].replace("(20℃)", "").replace("(물=1)", "")
-                            g_match = re.search(r'([\d\.]+)', gravity)
-                            safe_write_force(dest_ws, 176, 2, f"{g_match.group(1)} ± 0.01" if g_match else "", center=False)
-                            
-                            refract = s9["B182"].replace("(20℃)", "")
-                            r_match = re.search(r'([\d\.]+)', refract)
-                            
-                            if option == "HP(K)" and refractive_index_input:
-                                safe_write_force(dest_ws, 182, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
-                            else:
-                                safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
-
-                            fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F', mode=option)
-                            fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G', mode=option)
-                            fill_regulatory_section(dest_ws, 269, 300, active_substances, kor_data_map, 'H', mode=option)
-                            fill_regulatory_section(dest_ws, 316, 348, active_substances, kor_data_map, 'P', mode=option)
-                            fill_regulatory_section(dest_ws, 353, 385, active_substances, kor_data_map, 'P', mode=option)
-                            fill_regulatory_section(dest_ws, 392, 426, active_substances, kor_data_map, 'T', mode=option)
-                            fill_regulatory_section(dest_ws, 428, 460, active_substances, kor_data_map, 'U', mode=option)
-                            fill_regulatory_section(dest_ws, 465, 497, active_substances, kor_data_map, 'V', mode=option)
-
-                            for r in range(261, 268): dest_ws.row_dimensions[r].hidden = True
-                            for r in range(349, 352): dest_ws.row_dimensions[r].hidden = True
-                            dest_ws.row_dimensions[386].hidden = True
-                            for r in range(461, 464): dest_ws.row_dimensions[r].hidden = True
-
-                            s14 = parsed_data["sec14"]
-                            
-                            un_raw = str(s14.get("UN", "")).strip()
-                            un_val = re.sub(r"\D", "", un_raw)
-                            if not un_val or "해당없음" in un_raw: un_val = "자료없음"
-                            
-                            name_raw = str(s14.get("NAME", "")).strip()
-                            name_val = re.sub(r"\([^)]*\)", "", name_raw).strip()
-                            if not name_val or "해당없음" in name_raw: name_val = "자료없음"
-                            
-                            class_val = str(s14.get("CLASS", "")).strip()
-                            if not class_val or "해당없음" in class_val: class_val = "해당없음"
-                            
-                            pg_val = str(s14.get("PG", "")).strip()
-                            if not pg_val or "해당없음" in pg_val: pg_val = "해당없음"
-                            
-                            env_val = str(s14.get("ENV", "")).strip()
-                            if not env_val or "해당없음" in env_val: env_val = "해당없음"
-
-                            safe_write_force(dest_ws, 512, 2, un_val, center=False)
-                            safe_write_force(dest_ws, 513, 2, name_val, center=False)
-                            safe_write_force(dest_ws, 514, 2, class_val, center=False)
-                            safe_write_force(dest_ws, 515, 2, pg_val, center=False)
-                            safe_write_force(dest_ws, 516, 2, env_val, center=False)
-
-                            # [수정] 15번 항목: 15sec 전체 내용 스캔 방식으로 완벽 개선 (절대 실패 불가 로직)
-                            s15 = parsed_data["sec15"]
-                            full_text = s15.get("FULL_TEXT", "")
-                            
-                            # 공백, 특수문자 완벽 제거
-                            clean_full = re.sub(r'[\s\-\,\.\:\(\)]+', '', full_text)
-                            
-                            is_target = ("제4류인화성액체제3석유류비수용성액체지정수량2000리터" in clean_full) or \
-                                        ("4류제3석유류비수용성2000" in clean_full) or \
-                                        ("4류" in clean_full and "3석유류" in clean_full and "2000" in clean_full)
-                            
-                            if is_target:
-                                safe_write_force(dest_ws, 521, 2, "4류 제3석유류(비수용성) 2,000L", center=False)
-                            else:
-                                safe_write_force(dest_ws, 521, 2, "", center=False)
-                                dest_ws.cell(row=521, column=2).fill = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
-
-                            today_str = datetime.now().strftime("%Y.%m.%d")
-                            safe_write_force(dest_ws, 542, 2, today_str, center=False)
-
-                        # [HP(K) 이미지 복원: 과거 코드 로직 적용]
-                        if option in ["CFF(K)", "HP(K)", "CFF(E)"]:
-                            collected_pil_images = []
-                            page = doc[0]
-                            image_list = doc.get_page_images(0)
-                            
-                            for img_info in image_list:
-                                xref = img_info[0]
-                                try:
-                                    base_image = doc.extract_image(xref)
-                                    pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                s8 = parsed_data["sec8"]
+                                if "B156" in s8:
+                                    safe_write_force(dest_ws, 156, 2, s8["B156"], center=False)
                                     
-                                    if option == "HP(K)":
+                                    safe_write_force(dest_ws, 157, 2, s8["B157"], center=False)
+                                    if s8["B157"]: dest_ws.row_dimensions[157].hidden = False
+                                    else: dest_ws.row_dimensions[157].hidden = True
+                                    
+                                    safe_write_force(dest_ws, 158, 2, s8["B158"], center=False)
+                                    if s8["B158"]: dest_ws.row_dimensions[158].hidden = False
+                                    else: dest_ws.row_dimensions[158].hidden = True
+                                
+                                fill_regulatory_section(dest_ws, 202, 240, active_substances, eng_data_map, 'F', mode=option)
+                                fill_regulatory_section(dest_ws, 242, 279, active_substances, eng_data_map, 'G', mode=option)
+                                fill_regulatory_section(dest_ws, 281, 315, active_substances, eng_data_map, 'H', mode=option)
+                                fill_regulatory_section(dest_ws, 324, 358, active_substances, eng_data_map, 'P', mode=option)
+                                fill_regulatory_section(dest_ws, 360, 395, active_substances, eng_data_map, 'Q', mode=option)
+                                fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T', mode=option)
+                                fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
+                                fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
+
+                                if refractive_index_input:
+                                    safe_write_force(dest_ws, 189, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
+
+                                s14 = parsed_data["sec14"]
+                                
+                                un_val = str(s14.get("UN", "")).strip()
+                                if not un_val or un_val.lower() == "not applicable": un_val = "no data available"
+                                
+                                name_val = str(s14.get("NAME", "")).strip()
+                                if not name_val or name_val.lower() == "not applicable": name_val = "no data available"
+                                
+                                class_val = str(s14.get("CLASS", "")).strip()
+                                if not class_val or class_val.lower() == "not applicable": class_val = "Not applicable"
+                                
+                                pg_val = str(s14.get("PG", "")).strip()
+                                if not pg_val or pg_val.lower() == "not applicable": pg_val = "Not applicable"
+                                
+                                env_val = str(s14.get("ENV", "")).strip()
+                                if not env_val or env_val.lower() == "not applicable": env_val = "Not applicable"
+                                
+                                safe_write_force(dest_ws, 531, 2, un_val, center=False)
+                                safe_write_force(dest_ws, 532, 2, name_val, center=False)
+                                safe_write_force(dest_ws, 533, 2, class_val, center=False)
+                                safe_write_force(dest_ws, 534, 2, pg_val, center=False)
+                                safe_write_force(dest_ws, 535, 2, env_val, center=False)
+
+                                today_eng = datetime.now().strftime("%d. %b. %Y").upper()
+                                safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
+                                
+                                collected_pil_images = []
+                                page = doc[0]
+                                image_list = doc.get_page_images(0)
+                                
+                                for img_info in image_list:
+                                    xref = img_info[0]
+                                    try:
+                                        base_image = doc.extract_image(xref)
+                                        pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                        
                                         if is_blue_dominant(pil_img): continue
                                         w, h = pil_img.size
                                         if not is_square_shaped(w, h): continue
 
-                                    if loaded_refs:
-                                        matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
-                                        if matched_name:
-                                            clean_img = loaded_refs[matched_name]
-                                            collected_pil_images.append((extract_number(matched_name), clean_img))
-                                except: continue
-                            
-                            unique_images = {}
-                            for key, img in collected_pil_images:
-                                if key not in unique_images: unique_images[key] = img
-                            
-                            final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
-
-                            if final_sorted_imgs:
-                                unit_size = 67; icon_size = 60
-                                padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                                total_width = unit_size * len(final_sorted_imgs)
-                                total_height = unit_size
-                                merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                for idx, p_img in enumerate(final_sorted_imgs):
-                                    p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                    merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                        if loaded_refs:
+                                            matched_name = find_best_match_name(pil_img, loaded_refs, mode="HP(K)")
+                                            if matched_name:
+                                                clean_img = loaded_refs[matched_name]
+                                                collected_pil_images.append((extract_number(matched_name), clean_img))
+                                    except: continue
                                 
-                                img_byte_arr = io.BytesIO()
-                                merged_img.save(img_byte_arr, format='PNG')
-                                img_byte_arr.seek(0)
-                                dest_ws.add_image(XLImage(img_byte_arr), 'B23' if option in ["HP(K)", "CFF(K)"] else 'B22') 
+                                unique_images = {}
+                                for key, img in collected_pil_images:
+                                    if key not in unique_images: unique_images[key] = img
+                                
+                                final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
 
-                        dest_wb.external_links = []
-                        output = io.BytesIO()
-                        dest_wb.save(output)
-                        output.seek(0)
-                        
-                        final_name = f"{product_name_input} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
-                        if final_name in new_download_data:
-                            final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]}.xlsx"
-                        new_download_data[final_name] = output.getvalue()
-                        new_files.append(final_name)
-                        
-                    except Exception as e:
-                        st.error(f"오류 ({uploaded_file.name}): {e}")
+                                if final_sorted_imgs:
+                                    unit_size = 67; icon_size = 60
+                                    padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                                    total_width = unit_size * len(final_sorted_imgs)
+                                    total_height = unit_size
+                                    merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                                    for idx, p_img in enumerate(final_sorted_imgs):
+                                        p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                        merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                    
+                                    img_byte_arr = io.BytesIO()
+                                    merged_img.save(img_byte_arr, format='PNG')
+                                    img_byte_arr.seek(0)
+                                    dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
 
-            st.session_state['converted_files'] = new_files
-            st.session_state['download_data'] = new_download_data
-            
-            if 'df_code' in locals(): del df_code
-            if 'doc' in locals(): doc.close()
-            if 'dest_wb' in locals(): del dest_wb
-            if 'output' in locals(): del output
-            gc.collect()
+                            elif option == "CFF(E)":
+                                dest_ws['A50'].alignment = ALIGN_LEFT
+                                dest_ws['A64'].alignment = ALIGN_LEFT
+                                dest_ws['A70'].alignment = ALIGN_LEFT
+                                
+                                safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
+                                safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
+                                
+                                if parsed_data["hazard_cls"]:
+                                    clean_cls = "\n".join(parsed_data["hazard_cls"])
+                                    safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
+                                    dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
+                                
+                                if parsed_data["signal_word"]:
+                                    safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
 
-            if new_files: st.success("완료!")
-    else:
-        st.error("모든 파일을 업로드해주세요.")
+                                fill_fixed_range(dest_ws, 24, 36, parsed_data["h_codes"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map, mode=option)
+                                
+                                fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
+                                
+                                active_substances = []
+                                for c_data in parsed_data["composition_data"]:
+                                    cas = c_data[0].replace(" ", "").strip()
+                                    if cas in cas_name_map:
+                                        name = cas_name_map[cas]
+                                        if name: active_substances.append(name)
+                                        
+                                sd = parsed_data["sec4_to_7"]
+                                cell_map_e = {
+                                    "B125": sd.get("B125",""), "B126": sd.get("B126",""), 
+                                    "B127": sd.get("B127",""), "B128": sd.get("B128",""),
+                                    "B129": sd.get("B129",""), "B132": sd.get("B132",""),
+                                    "B134": sd.get("B134",""), "B136": sd.get("B136",""),
+                                    "B140": sd.get("B140",""), "B142": sd.get("B142",""),
+                                    "B144": sd.get("B144",""), "B148": sd.get("B148",""),
+                                    "B150": sd.get("B150",""),
+                                    "B170": parsed_data["sec9"].get("B170","").capitalize(),
+                                    "B176": parsed_data["sec9"].get("B176",""),
+                                    "B183": parsed_data["sec9"].get("B183",""),
+                                    "B189": parsed_data["sec9"].get("B189","")
+                                }
+                                
+                                for addr, val in cell_map_e.items():
+                                    if not val: continue
+                                    if addr in ["B183", "B189"] and "±" not in val:
+                                        num = re.search(r'([\d\.]+)', val)
+                                        if num:
+                                            suffix = "0.01" if addr == "B183" else "0.005"
+                                            val = f"{num.group(1)} ± {suffix}"
+                                    
+                                    formatted, h = format_and_calc_height_sec47(val, mode=option)
+                                    r_idx = int(re.search(r'\d+', addr).group())
+                                    safe_write_force(dest_ws, r_idx, 2, formatted, center=False)
+                                    dest_ws.row_dimensions[r_idx].height = h
 
-with col_right:
+                                s8 = parsed_data["sec8"]
+                                if s8["B154"]:
+                                    lines = s8["B154"].split('\n')
+                                    safe_write_force(dest_ws, 154, 2, lines[0].lower() if "no data" in lines[0].lower() else lines[0], center=False)
+                                    if len(lines) > 1:
+                                        safe_write_force(dest_ws, 155, 2, "\n".join(lines[1:]), center=False)
+                                        dest_ws.row_dimensions[155].hidden = False
+                                
+                                if s8["B156"]:
+                                    lines = s8["B156"].split('\n')
+                                    safe_write_force(dest_ws, 156, 2, lines[0].lower() if "no data" in lines[0].lower() else lines[0], center=False)
+                                    if len(lines) > 1:
+                                        safe_write_force(dest_ws, 157, 2, "\n".join(lines[1:]), center=False)
+                                        dest_ws.row_dimensions[157].hidden = False
+
+                                fill_regulatory_section(dest_ws, 202, 240, active_substances, eng_data_map, 'F', mode=option)
+                                fill_regulatory_section(dest_ws, 242, 279, active_substances, eng_data_map, 'G', mode=option)
+                                fill_regulatory_section(dest_ws, 281, 315, active_substances, eng_data_map, 'H', mode=option)
+                                fill_regulatory_section(dest_ws, 324, 358, active_substances, eng_data_map, 'P', mode=option)
+                                fill_regulatory_section(dest_ws, 360, 395, active_substances, eng_data_map, 'Q', mode=option)
+                                fill_regulatory_section(dest_ws, 401, 437, active_substances, eng_data_map, 'T', mode=option)
+                                fill_regulatory_section(dest_ws, 439, 478, active_substances, eng_data_map, 'U', mode=option)
+                                fill_regulatory_section(dest_ws, 480, 519, active_substances, eng_data_map, 'V', mode=option)
+
+                                if refractive_index_input:
+                                    safe_write_force(dest_ws, 189, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
+
+                                s14 = parsed_data["sec14"]
+                                
+                                un_val = str(s14.get("UN", "")).strip()
+                                if not un_val or un_val.lower() == "not applicable": un_val = "no data available"
+                                
+                                name_val = str(s14.get("NAME", "")).strip()
+                                if not name_val or name_val.lower() == "not applicable": name_val = "no data available"
+                                
+                                class_val = str(s14.get("CLASS", "")).strip()
+                                if not class_val or class_val.lower() == "not applicable": class_val = "Not applicable"
+                                
+                                pg_val = str(s14.get("PG", "")).strip()
+                                if not pg_val or pg_val.lower() == "not applicable": pg_val = "Not applicable"
+                                
+                                env_val = str(s14.get("ENV", "")).strip()
+                                if not env_val or env_val.lower() == "not applicable": env_val = "Not applicable"
+                                
+                                safe_write_force(dest_ws, 531, 2, un_val, center=False)
+                                safe_write_force(dest_ws, 532, 2, name_val, center=False)
+                                safe_write_force(dest_ws, 533, 2, class_val, center=False)
+                                safe_write_force(dest_ws, 534, 2, pg_val, center=False)
+                                safe_write_force(dest_ws, 535, 2, env_val, center=False)
+
+                                today_eng = datetime.now().strftime("%d. %b. %Y").upper()
+                                safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
+                                
+                                collected_pil_images = []
+                                page = doc[0]
+                                image_list = doc.get_page_images(0)
+                                
+                                for img_info in image_list:
+                                    xref = img_info[0]
+                                    try:
+                                        base_image = doc.extract_image(xref)
+                                        pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                        
+                                        if loaded_refs:
+                                            matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                            if matched_name:
+                                                clean_img = loaded_refs[matched_name]
+                                                collected_pil_images.append((extract_number(matched_name), clean_img))
+                                    except: continue
+                                
+                                unique_images = {}
+                                for key, img in collected_pil_images:
+                                    if key not in unique_images: unique_images[key] = img
+                                
+                                final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
+
+                                if final_sorted_imgs:
+                                    unit_size = 67; icon_size = 60
+                                    padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                                    total_width = unit_size * len(final_sorted_imgs)
+                                    total_height = unit_size
+                                    merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                                    for idx, p_img in enumerate(final_sorted_imgs):
+                                        p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                        merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                    
+                                    img_byte_arr = io.BytesIO()
+                                    merged_img.save(img_byte_arr, format='PNG')
+                                    img_byte_arr.seek(0)
+                                    dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
+
+                            else: # CFF(K) / HP(K)
+                                safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
+                                safe_write_force(dest_ws, 10, 2, product_name_input, center=False)
+                                
+                                if parsed_data["hazard_cls"]:
+                                    clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
+                                    safe_write_force(dest_ws, 20, 2, clean_hazard_text, center=False)
+                                    dest_ws['B20'].alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
+                                    valid_lines_count = len([line for line in parsed_data["hazard_cls"] if line.strip()])
+                                    if valid_lines_count > 0:
+                                        dest_ws.row_dimensions[20].height = valid_lines_count * 14.0
+
+                                signal_final = parsed_data["signal_word"] if parsed_data["signal_word"] else ""
+                                safe_write_force(dest_ws, 24, 2, signal_final, center=False) 
+
+                                if option == "HP(K)":
+                                    safe_write_force(dest_ws, 38, 1, "예방", center=False)
+                                    safe_write_force(dest_ws, 50, 1, "대응", center=False)
+                                    safe_write_force(dest_ws, 64, 1, "저장", center=False)
+                                    safe_write_force(dest_ws, 70, 1, "폐기", center=False)
+
+                                fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 70, 72, parsed_data["p_disp"], code_map, mode=option)
+
+                                fill_composition_data(dest_ws, parsed_data["composition_data"], cas_name_map, mode=option)
+                                
+                                active_substances = []
+                                for c_data in parsed_data["composition_data"]:
+                                    cas = c_data[0].replace(" ", "").strip()
+                                    if cas in cas_name_map:
+                                        name = cas_name_map[cas]
+                                        if name: active_substances.append(name)
+
+                                sec_data = parsed_data["sec4_to_7"]
+                                for cell_addr, raw_text in sec_data.items():
+                                    formatted_txt, row_h = format_and_calc_height_sec47(raw_text, mode=option)
+                                    try:
+                                        col_str = re.match(r"([A-Z]+)", cell_addr).group(1)
+                                        row_num = int(re.search(r"(\d+)", cell_addr).group(1))
+                                        col_idx = openpyxl.utils.column_index_from_string(col_str)
+                                        safe_write_force(dest_ws, row_num, col_idx, "")
+                                        if formatted_txt:
+                                            safe_write_force(dest_ws, row_num, col_idx, formatted_txt, center=False)
+                                            dest_ws.row_dimensions[row_num].height = row_h
+                                            try:
+                                                cell_a = dest_ws.cell(row=row_num, column=1)
+                                                if cell_a.value: cell_a.value = str(cell_a.value).strip()
+                                                cell_a.alignment = ALIGN_TITLE
+                                            except: pass
+                                    except Exception as e: pass
+
+                                s8 = parsed_data["sec8"]
+                                val148 = s8["B148"].replace("해당없음", "자료없음")
+                                lines148 = [l.strip() for l in val148.split('\n') if l.strip()]
+                                safe_write_force(dest_ws, 148, 2, ""); safe_write_force(dest_ws, 149, 2, ""); dest_ws.row_dimensions[149].hidden = True
+                                if lines148:
+                                    safe_write_force(dest_ws, 148, 2, lines148[0], center=False)
+                                    if len(lines148) > 1:
+                                        safe_write_force(dest_ws, 149, 2, "\n".join(lines148[1:]), center=False)
+                                        dest_ws.row_dimensions[149].hidden = False
+                                
+                                val150 = s8["B150"].replace("해당없음", "자료없음")
+                                val150 = re.sub(r"^규정[:\s]*", "", val150).strip()
+                                safe_write_force(dest_ws, 150, 2, val150, center=False)
+
+                                s9 = parsed_data["sec9"]
+                                safe_write_force(dest_ws, 163, 2, s9["B163"], center=False)
+                                
+                                if option == "HP(K)":
+                                    flash = s9["B169"]
+                                    flash_num = re.findall(r'([<>]?\s*\d{2,3})', flash)
+                                    safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
+                                else:
+                                    flash = s9["B169"]
+                                    flash_num = re.findall(r'(\d{2,3})', flash)
+                                    safe_write_force(dest_ws, 169, 2, f"{flash_num[0]}℃" if flash_num else "", center=False)
+                                
+                                gravity = s9["B176"].replace("(20℃)", "").replace("(물=1)", "")
+                                g_match = re.search(r'([\d\.]+)', gravity)
+                                safe_write_force(dest_ws, 176, 2, f"{g_match.group(1)} ± 0.01" if g_match else "", center=False)
+                                
+                                refract = s9["B182"].replace("(20℃)", "")
+                                r_match = re.search(r'([\d\.]+)', refract)
+                                
+                                if option == "HP(K)" and refractive_index_input:
+                                    safe_write_force(dest_ws, 182, 2, f"{refractive_index_input.strip()} ± 0.005", center=False)
+                                else:
+                                    safe_write_force(dest_ws, 182, 2, f"{r_match.group(1)} ± 0.005" if r_match else "", center=False)
+
+                                fill_regulatory_section(dest_ws, 195, 226, active_substances, kor_data_map, 'F', mode=option)
+                                fill_regulatory_section(dest_ws, 228, 260, active_substances, kor_data_map, 'G', mode=option)
+                                fill_regulatory_section(dest_ws, 269, 300, active_substances, kor_data_map, 'H', mode=option)
+                                fill_regulatory_section(dest_ws, 316, 348, active_substances, kor_data_map, 'P', mode=option)
+                                fill_regulatory_section(dest_ws, 353, 385, active_substances, kor_data_map, 'P', mode=option)
+                                fill_regulatory_section(dest_ws, 392, 426, active_substances, kor_data_map, 'T', mode=option)
+                                fill_regulatory_section(dest_ws, 428, 460, active_substances, kor_data_map, 'U', mode=option)
+                                fill_regulatory_section(dest_ws, 465, 497, active_substances, kor_data_map, 'V', mode=option)
+
+                                for r in range(261, 268): dest_ws.row_dimensions[r].hidden = True
+                                for r in range(349, 352): dest_ws.row_dimensions[r].hidden = True
+                                dest_ws.row_dimensions[386].hidden = True
+                                for r in range(461, 464): dest_ws.row_dimensions[r].hidden = True
+
+                                s14 = parsed_data["sec14"]
+                                
+                                un_raw = str(s14.get("UN", "")).strip()
+                                un_val = re.sub(r"\D", "", un_raw)
+                                if not un_val or "해당없음" in un_raw: un_val = "자료없음"
+                                
+                                name_raw = str(s14.get("NAME", "")).strip()
+                                name_val = re.sub(r"\([^)]*\)", "", name_raw).strip()
+                                if not name_val or "해당없음" in name_raw: name_val = "자료없음"
+                                
+                                class_val = str(s14.get("CLASS", "")).strip()
+                                if not class_val or "해당없음" in class_val: class_val = "해당없음"
+                                
+                                pg_val = str(s14.get("PG", "")).strip()
+                                if not pg_val or "해당없음" in pg_val: pg_val = "해당없음"
+                                
+                                env_val = str(s14.get("ENV", "")).strip()
+                                if not env_val or "해당없음" in env_val: env_val = "해당없음"
+
+                                safe_write_force(dest_ws, 512, 2, un_val, center=False)
+                                safe_write_force(dest_ws, 513, 2, name_val, center=False)
+                                safe_write_force(dest_ws, 514, 2, class_val, center=False)
+                                safe_write_force(dest_ws, 515, 2, pg_val, center=False)
+                                safe_write_force(dest_ws, 516, 2, env_val, center=False)
+
+                                # [수정2] HP(K) B521 텍스트 강제 삽입 및 빨간색 배경 하드코딩
+                                if option == "HP(K)":
+                                    safe_write_force(dest_ws, 521, 2, "4류 제3석유류(비수용성) 2,000L", center=False)
+                                    dest_ws.cell(row=521, column=2).fill = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
+                                else:
+                                    # CFF(K) 모드 동작 (기존 유지)
+                                    s15 = parsed_data["sec15"]
+                                    full_text = s15.get("FULL_TEXT", "")
+                                    clean_full = re.sub(r'[\s\-\,\.\:\(\)]+', '', full_text)
+                                    
+                                    is_target = ("제4류인화성액체제3석유류비수용성액체지정수량2000리터" in clean_full) or \
+                                                ("4류제3석유류비수용성2000" in clean_full) or \
+                                                ("4류" in clean_full and "3석유류" in clean_full and "2000" in clean_full)
+                                    
+                                    if is_target:
+                                        safe_write_force(dest_ws, 521, 2, "4류 제3석유류(비수용성) 2,000L", center=False)
+                                    else:
+                                        safe_write_force(dest_ws, 521, 2, "", center=False)
+                                        dest_ws.cell(row=521, column=2).fill = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
+
+                                today_str = datetime.now().strftime("%Y.%m.%d")
+                                safe_write_force(dest_ws, 542, 2, today_str, center=False)
+
+                            # [HP(K) 이미지 복원: 과거 코드 로직 적용]
+                            if option in ["CFF(K)", "HP(K)", "CFF(E)"]:
+                                collected_pil_images = []
+                                page = doc[0]
+                                image_list = doc.get_page_images(0)
+                                
+                                for img_info in image_list:
+                                    xref = img_info[0]
+                                    try:
+                                        base_image = doc.extract_image(xref)
+                                        pil_img = PILImage.open(io.BytesIO(base_image["image"]))
+                                        
+                                        if option == "HP(K)":
+                                            if is_blue_dominant(pil_img): continue
+                                            w, h = pil_img.size
+                                            if not is_square_shaped(w, h): continue
+
+                                        if loaded_refs:
+                                            matched_name = find_best_match_name(pil_img, loaded_refs, mode=option)
+                                            if matched_name:
+                                                clean_img = loaded_refs[matched_name]
+                                                collected_pil_images.append((extract_number(matched_name), clean_img))
+                                    except: continue
+                                
+                                unique_images = {}
+                                for key, img in collected_pil_images:
+                                    if key not in unique_images: unique_images[key] = img
+                                
+                                final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
+
+                                if final_sorted_imgs:
+                                    unit_size = 67; icon_size = 60
+                                    padding_top = 4; padding_left = (unit_size - icon_size) // 2
+                                    total_width = unit_size * len(final_sorted_imgs)
+                                    total_height = unit_size
+                                    merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
+                                    for idx, p_img in enumerate(final_sorted_imgs):
+                                        p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
+                                        merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
+                                    
+                                    img_byte_arr = io.BytesIO()
+                                    merged_img.save(img_byte_arr, format='PNG')
+                                    img_byte_arr.seek(0)
+                                    dest_ws.add_image(XLImage(img_byte_arr), 'B23' if option in ["HP(K)", "CFF(K)"] else 'B22') 
+
+                            dest_wb.external_links = []
+                            output = io.BytesIO()
+                            dest_wb.save(output)
+                            output.seek(0)
+                            
+                            final_name = f"{product_name_input} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
+                            if final_name in new_download_data:
+                                final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]}.xlsx"
+                            new_download_data[final_name] = output.getvalue()
+                            new_files.append(final_name)
+                            
+                        except Exception as e:
+                            st.error(f"오류 ({uploaded_file.name}): {e}")
+
+                st.session_state['converted_files'] = new_files
+                st.session_state['download_data'] = new_download_data
+                
+                if 'df_code' in locals(): del df_code
+                if 'doc' in locals(): doc.close()
+                if 'dest_wb' in locals(): del dest_wb
+                if 'output' in locals(): del output
+                gc.collect()
+
+                if new_files: st.success("완료!")
+        else:
+            st.error("필수 파일(중앙 데이터, 원본 데이터)을 모두 업로드해주세요.")
+
+with col_dl:
     st.subheader("결과 다운로드")
     if st.session_state['converted_files']:
         for i, fname in enumerate(st.session_state['converted_files']):
