@@ -1110,6 +1110,29 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             "ENV": env_raw
         }
 
+    # [수정] 15번 항목: 15섹션의 전체 텍스트 긁어오기 (CFF/HP 각 모드별 조건 처리를 위함)
+    sec15_lines = []
+    start_15 = -1; end_15 = -1
+    for i, line in enumerate(all_lines):
+        clean_txt = line['text'].replace(" ", "")
+        if "15.법적" in clean_txt: start_15 = i
+        if "16.그밖의" in clean_txt or "16.기타" in clean_txt: end_15 = i; break
+    
+    if start_15 != -1:
+        if end_15 == -1: end_15 = len(all_lines)
+        sec15_lines = all_lines[start_15:end_15]
+    else:
+        sec15_lines = all_lines
+        
+    danger_act_text = extract_section_smart(sec15_lines, "위험물안전관리법에 의한 규제", ["마. 폐기물", "마.폐기물"], mode)
+    if not danger_act_text:
+        danger_act_text = extract_section_smart(sec15_lines, "위험물안전관리법", ["마. 폐기물", "마.폐기물"], mode)
+
+    result["sec15"] = {
+        "DANGER": danger_act_text,
+        "FULL_TEXT": "\n".join([l['text'] for l in sec15_lines])
+    }
+
     return result
 
 # --------------------------------------------------------------------------
@@ -1164,7 +1187,6 @@ with col_btn:
     st.write("") 
     if st.button("변환 시작", use_container_width=True):
         if uploaded_files and master_data_file:
-            # 템플릿 파일 자동 선택 로직
             if option in ["CFF(E)", "HP(E)"]:
                 template_path = os.path.join("templates", "MSDS 영문.xlsx")
             else:
@@ -1327,9 +1349,6 @@ with col_btn:
                             dest_ws = dest_wb.active
 
                             dest_wb.external_links = []
-                            
-                            # [수정1] 어떠한 조건 검사나 필터링 없이 이미지 삭제 코드 자체를 완전히 제거했습니다.
-                            # 이제 템플릿에 들어있는 배너 이미지는 100% 아무런 조작 없이 그대로 보존됩니다.
 
                             for row in dest_ws.iter_rows():
                                 for cell in row:
@@ -1762,25 +1781,23 @@ with col_btn:
                                 safe_write_force(dest_ws, 515, 2, pg_val, center=False)
                                 safe_write_force(dest_ws, 516, 2, env_val, center=False)
 
-                                # [수정2] HP(K) B521 텍스트 강제 삽입 및 빨간색 배경 하드코딩
+                                # [수정] 15번 항목: CFF(K)는 추출 내용 그대로(빨간색 안 칠함), HP(K)는 키워드 유무에 따라 필터 적용
+                                s15 = parsed_data["sec15"]
+                                
                                 if option == "HP(K)":
-                                    safe_write_force(dest_ws, 521, 2, "4류 제3석유류(비수용성) 2,000L", center=False)
-                                    dest_ws.cell(row=521, column=2).fill = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
-                                else:
-                                    # CFF(K) 모드 동작 (기존 유지)
-                                    s15 = parsed_data["sec15"]
                                     full_text = s15.get("FULL_TEXT", "")
                                     clean_full = re.sub(r'[\s\-\,\.\:\(\)]+', '', full_text)
                                     
-                                    is_target = ("제4류인화성액체제3석유류비수용성액체지정수량2000리터" in clean_full) or \
-                                                ("4류제3석유류비수용성2000" in clean_full) or \
-                                                ("4류" in clean_full and "3석유류" in clean_full and "2000" in clean_full)
+                                    is_target = ("4류" in clean_full and "3석유류" in clean_full and "2000" in clean_full)
                                     
                                     if is_target:
                                         safe_write_force(dest_ws, 521, 2, "4류 제3석유류(비수용성) 2,000L", center=False)
                                     else:
                                         safe_write_force(dest_ws, 521, 2, "", center=False)
                                         dest_ws.cell(row=521, column=2).fill = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
+                                else: # CFF(K)
+                                    danger_text = s15.get("DANGER", "").strip()
+                                    safe_write_force(dest_ws, 521, 2, danger_text, center=False)
 
                                 today_str = datetime.now().strftime("%Y.%m.%d")
                                 safe_write_force(dest_ws, 542, 2, today_str, center=False)
@@ -1871,4 +1888,3 @@ with col_dl:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
-
