@@ -61,7 +61,6 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        # [수정] 영문 모드(HP/CFF 공통)의 줄바꿈 기준을 58자로 통일하여 텍스트 잘림 현상 방지
         char_limit = 58.0
         for line in lines:
             if len(line) == 0:
@@ -189,8 +188,7 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
                 safe_write_force(ws, current_row, 4, "자료없음", center=False)
-            # [수정] 영문 모드에서 no data available을 넣는 기준 행을 24행으로 원상 복구 (밀림 해결)
-            elif "E" in mode and current_row in [24, 38, 50, 64, 70]:
+            elif "E" in mode and current_row in [24, 25, 38, 50, 64, 70]:
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
                 safe_write_force(ws, current_row, 4, "no data available", center=False)
@@ -618,43 +616,26 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["p_stor"] = extract_codes_ordered(extract_section_smart(all_lines, "3) Storage", "4) Disposal", mode))
         result["p_disp"] = extract_codes_ordered(extract_section_smart(all_lines, "4) Disposal", "C. Other hazards", mode))
 
-        in_comp = False
-        for line in all_lines:
-            txt = line['text']
-            if "3." in txt and ("성분" in txt or "Composition" in txt or "COMPOSITION" in txt): in_comp=True; continue
-            if "4." in txt and ("응급" in txt or "First" in txt or "FIRST" in txt): in_comp=False; break
-            
-            if in_comp:
-                if re.search(r'^\d+\.\d+', txt): continue 
+        # [수정] HP(E) 모드의 성분 추출 로직을 CFF(E)와 동일한 스마트 블록 추출 방식으로 완벽 동기화 (물질 누락 오류 해결)
+        comp_text = extract_section_smart(all_lines, "3. Composition", ["4. FIRST-AID", "4. First aid"], mode)
+        regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
+        regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
+        
+        cas_list = regex_cas.findall(comp_text)
+        conc_list = []
+        
+        comp_text_no_cas = regex_cas.sub(" ", comp_text)
+        for match in regex_conc.finditer(comp_text_no_cas):
+            val1 = float(match.group(1))
+            val2 = float(match.group(2))
+            if val1 <= 100 and val2 <= 100:
+                conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
                 
-                c_val = ""
-                cn_val = ""
-                
-                regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
-                cas_found = regex_cas_strict.findall(txt)
-                
-                if cas_found:
-                    c_val = cas_found[0].replace(" ", "")
-                    idx = txt.find(cas_found[0])
-                    txt_after_cas = txt[idx + len(cas_found[0]):]
-                    
-                    m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_after_cas)
-                    if m_range:
-                        s, e = m_range.group(1), m_range.group(2)
-                        if float(s) <= 100 and float(e) <= 100:
-                            if s == "1": s = "0"
-                            cn_val = f"{s} ~ {e}"
-                    else:
-                        m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_after_cas)
-                        if m_single:
-                            try:
-                                v = m_single.group(1)
-                                if float(v) <= 100: 
-                                    cn_val = v
-                            except: pass
-                            
-                if c_val or cn_val:
-                    result["composition_data"].append((c_val, cn_val))
+        max_len = max(len(cas_list), len(conc_list))
+        for i in range(max_len):
+            c_val = cas_list[i] if i < len(cas_list) else ""
+            cn_val = conc_list[i] if i < len(conc_list) else ""
+            result["composition_data"].append((c_val, cn_val))
 
         sec5_lines = []
         for i, line in enumerate(all_lines):
@@ -1304,8 +1285,6 @@ with col_btn:
                             res = []
                             cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
                             for r in range(s_r, e_r + 1):
-                                if ws.row_dimensions[r].hidden: 
-                                    continue
                                 cas = ws.cell(row=r, column=cas_col).value
                                 conc = ws.cell(row=r, column=conc_col).value
                                 if cas and str(cas).strip():
@@ -1369,6 +1348,7 @@ with col_btn:
                                     safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
                                     dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
                                 
+                                # [수정] HP(E) 모드의 시작 행 번호를 23/24행으로 원상 복구 (밀림 방지)
                                 if parsed_data["signal_word"]:
                                     safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
 
@@ -1469,6 +1449,10 @@ with col_btn:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         
+                                        if is_blue_dominant(pil_img): continue
+                                        w, h = pil_img.size
+                                        if not is_square_shaped(w, h): continue
+
                                         if loaded_refs:
                                             matched_name = find_best_match_name(pil_img, loaded_refs, mode="HP(K)")
                                             if matched_name:
@@ -1778,7 +1762,6 @@ with col_btn:
                                 safe_write_force(dest_ws, 515, 2, pg_val, center=False)
                                 safe_write_force(dest_ws, 516, 2, env_val, center=False)
 
-                                # [수정] 15번 항목: CFF(K)는 추출 내용 그대로(빨간색 안 칠함), HP(K)는 키워드 유무에 따라 필터 적용
                                 s15 = parsed_data["sec15"]
                                 
                                 if option == "HP(K)":
