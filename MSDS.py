@@ -1115,18 +1115,18 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 # --------------------------------------------------------------------------
 # [4. 메인 실행 구역]
 # --------------------------------------------------------------------------
-st.markdown("### 📂 필수 파일 업로드 및 설정")
+st.markdown("### 📂 필수 파일 업로드")
 col1, col2 = st.columns(2)
 with col1:
-    master_data_file = st.file_uploader("1. 중앙 데이터 (ingredients...xlsx)", type="xlsx")
+    master_data_file = st.file_uploader("MSDS 데이터 (ingredients...xlsx)", type="xlsx")
     loaded_refs, folder_exists = get_reference_images()
     if folder_exists and loaded_refs:
-        st.success(f"✅ 기준 그림 {len(loaded_refs)}개 로드됨")
+        st.success(f"✅ 신호어 {len(loaded_refs)}개 로드됨")
     elif not folder_exists:
         st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
 with col2:
-    uploaded_files = st.file_uploader("2. 원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
 
 st.write("")
 c1, c2, c3 = st.columns(3)
@@ -1140,16 +1140,16 @@ with c3:
         refractive_index_input = st.text_input("굴절률 입력")
         
 kor_excel_file = None
-kor_form_version = "신버전 (코드 B25~, 물질 80~122행)"
+kor_form_version = "신버전"
 
 if option in ["CFF(E)", "HP(E)"]:
     st.markdown("---")
-    st.markdown("💡 **(선택) 영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
+    st.markdown("💡 **영문(E) 양식 생성 시, 국문 양식에서 코드 및 물질 정보 가져오기**")
     c4, c5 = st.columns(2)
     with c4:
-        kor_excel_file = st.file_uploader("3. 국문 엑셀 파일 (선택)", type="xlsx")
+        kor_excel_file = st.file_uploader("국문 엑셀 파일", type="xlsx")
     with c5:
-        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전 (코드 B25~, 물질 80~122행)", "구버전 (코드 B25~150, 물질 추출)"])
+        kor_form_version = st.radio("국문 양식 버전 선택", ["신버전", "구버전"])
 
 st.markdown("---")
 
@@ -1855,7 +1855,7 @@ with col_btn:
 
                 if new_files: st.success("완료!")
         else:
-            st.error("필수 파일(중앙 데이터, 원본 데이터)을 모두 업로드해주세요.")
+            st.error("필수 파일(MSDS 데이터, 원본 데이터)을 모두 업로드해주세요.")
 
 with col_dl:
     st.subheader("결과 다운로드")
@@ -1871,3 +1871,4 @@ with col_dl:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
+
