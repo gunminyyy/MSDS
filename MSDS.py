@@ -61,6 +61,7 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
+        # [수정] 영문 모드(HP/CFF 공통)의 줄바꿈 기준을 58자로 통일하여 텍스트 잘림 현상 방지
         char_limit = 58.0
         for line in lines:
             if len(line) == 0:
@@ -79,6 +80,12 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
                         lines_for_this_paragraph += 1
                         current_len = len(word)
                 total_visual_lines += lines_for_this_paragraph
+        
+        # [수정] 지시하신 특정 P코드 문구가 포함될 경우 단어 잘림을 고려해 3줄 높이로 강제 보정
+        clean_check = re.sub(r'[\s]+', '', str(text).lower())
+        if "rinsecautiouslywithwater" in clean_check and "removecontactlenses" in clean_check:
+            if total_visual_lines < 3:
+                total_visual_lines = 3
                 
         if total_visual_lines <= 1: 
             return 18.75
@@ -616,26 +623,43 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["p_stor"] = extract_codes_ordered(extract_section_smart(all_lines, "3) Storage", "4) Disposal", mode))
         result["p_disp"] = extract_codes_ordered(extract_section_smart(all_lines, "4) Disposal", "C. Other hazards", mode))
 
-        # [수정] HP(E) 모드의 성분 추출 로직을 CFF(E)와 동일한 스마트 블록 추출 방식으로 완벽 동기화 (물질 누락 오류 해결)
-        comp_text = extract_section_smart(all_lines, "3. Composition", ["4. FIRST-AID", "4. First aid"], mode)
-        regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
-        regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
-        
-        cas_list = regex_cas.findall(comp_text)
-        conc_list = []
-        
-        comp_text_no_cas = regex_cas.sub(" ", comp_text)
-        for match in regex_conc.finditer(comp_text_no_cas):
-            val1 = float(match.group(1))
-            val2 = float(match.group(2))
-            if val1 <= 100 and val2 <= 100:
-                conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+        in_comp = False
+        for line in all_lines:
+            txt = line['text']
+            if "3." in txt and ("성분" in txt or "Composition" in txt or "COMPOSITION" in txt): in_comp=True; continue
+            if "4." in txt and ("응급" in txt or "First" in txt or "FIRST" in txt): in_comp=False; break
+            
+            if in_comp:
+                if re.search(r'^\d+\.\d+', txt): continue 
                 
-        max_len = max(len(cas_list), len(conc_list))
-        for i in range(max_len):
-            c_val = cas_list[i] if i < len(cas_list) else ""
-            cn_val = conc_list[i] if i < len(conc_list) else ""
-            result["composition_data"].append((c_val, cn_val))
+                c_val = ""
+                cn_val = ""
+                
+                regex_cas_strict = re.compile(r'\b(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)\b')
+                cas_found = regex_cas_strict.findall(txt)
+                
+                if cas_found:
+                    c_val = cas_found[0].replace(" ", "")
+                    idx = txt.find(cas_found[0])
+                    txt_after_cas = txt[idx + len(cas_found[0]):]
+                    
+                    m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_after_cas)
+                    if m_range:
+                        s, e = m_range.group(1), m_range.group(2)
+                        if float(s) <= 100 and float(e) <= 100:
+                            if s == "1": s = "0"
+                            cn_val = f"{s} ~ {e}"
+                    else:
+                        m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_after_cas)
+                        if m_single:
+                            try:
+                                v = m_single.group(1)
+                                if float(v) <= 100: 
+                                    cn_val = v
+                            except: pass
+                            
+                if c_val or cn_val:
+                    result["composition_data"].append((c_val, cn_val))
 
         sec5_lines = []
         for i, line in enumerate(all_lines):
@@ -1143,7 +1167,13 @@ with c3:
     refractive_index_input = ""
     if option in ["HP(K)", "HP(E)"]:
         refractive_index_input = st.text_input("굴절률 입력")
-        
+
+# 셀 안에 그림 넣기로 인한 #VALUE 오류 안내문
+if option in ["CFF(K)", "HP(K)"]:
+    st.info("※ 엑셀 템플릿의 상단 배너 이미지는 반드시 **'셀 위로 띄우기(떠다니는 이미지)'**로 삽입해 주세요. (셀 안에 넣기로 삽입된 이미지는 파이썬 구조상 보존이 불가능합니다.)")
+    
+st.write("") 
+
 kor_excel_file = None
 kor_form_version = "신버전"
 
@@ -1285,6 +1315,8 @@ with col_btn:
                             res = []
                             cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
                             for r in range(s_r, e_r + 1):
+                                if ws.row_dimensions[r].hidden: 
+                                    continue
                                 cas = ws.cell(row=r, column=cas_col).value
                                 conc = ws.cell(row=r, column=conc_col).value
                                 if cas and str(cas).strip():
@@ -1348,7 +1380,6 @@ with col_btn:
                                     safe_write_force(dest_ws, 19, 2, clean_cls, center=False)
                                     dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
                                 
-                                # [수정] HP(E) 모드의 시작 행 번호를 23/24행으로 원상 복구 (밀림 방지)
                                 if parsed_data["signal_word"]:
                                     safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
 
@@ -1438,48 +1469,6 @@ with col_btn:
 
                                 today_eng = datetime.now().strftime("%d. %b. %Y").upper()
                                 safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
-                                
-                                collected_pil_images = []
-                                page = doc[0]
-                                image_list = doc.get_page_images(0)
-                                
-                                for img_info in image_list:
-                                    xref = img_info[0]
-                                    try:
-                                        base_image = doc.extract_image(xref)
-                                        pil_img = PILImage.open(io.BytesIO(base_image["image"]))
-                                        
-                                        if is_blue_dominant(pil_img): continue
-                                        w, h = pil_img.size
-                                        if not is_square_shaped(w, h): continue
-
-                                        if loaded_refs:
-                                            matched_name = find_best_match_name(pil_img, loaded_refs, mode="HP(K)")
-                                            if matched_name:
-                                                clean_img = loaded_refs[matched_name]
-                                                collected_pil_images.append((extract_number(matched_name), clean_img))
-                                    except: continue
-                                
-                                unique_images = {}
-                                for key, img in collected_pil_images:
-                                    if key not in unique_images: unique_images[key] = img
-                                
-                                final_sorted_imgs = [item[1] for item in sorted(unique_images.items(), key=lambda x: x[0])]
-
-                                if final_sorted_imgs:
-                                    unit_size = 67; icon_size = 60
-                                    padding_top = 4; padding_left = (unit_size - icon_size) // 2
-                                    total_width = unit_size * len(final_sorted_imgs)
-                                    total_height = unit_size
-                                    merged_img = PILImage.new('RGBA', (total_width, total_height), (255, 255, 255, 0))
-                                    for idx, p_img in enumerate(final_sorted_imgs):
-                                        p_img_resized = p_img.resize((icon_size, icon_size), PILImage.LANCZOS)
-                                        merged_img.paste(p_img_resized, ((idx * unit_size) + padding_left, padding_top))
-                                    
-                                    img_byte_arr = io.BytesIO()
-                                    merged_img.save(img_byte_arr, format='PNG')
-                                    img_byte_arr.seek(0)
-                                    dest_ws.add_image(XLImage(img_byte_arr), 'B22') 
 
                             elif option == "CFF(E)":
                                 dest_ws['A50'].alignment = ALIGN_LEFT
