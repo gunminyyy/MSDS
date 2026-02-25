@@ -712,7 +712,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         g_m = re.search(r'([\d\.]+)', sg_val)
         s9["B183"] = f"{g_m.group(1)} ± 0.010" if g_m else ""
         
-        # [수정] HP(E) 굴절률 추출 로직 복원 (파싱)
         b189_raw = find_val_in_sec9(sec9_lines, "Refractive index")
         s9["B189"] = b189_raw.replace("(20℃)", "").strip()
         
@@ -1502,12 +1501,13 @@ with col_btn:
                                     "B150": sd.get("B150",""),
                                     "B170": parsed_data["sec9"].get("B170","").capitalize(),
                                     "B176": parsed_data["sec9"].get("B176",""),
-                                    "B183": parsed_data["sec9"].get("B183","")
+                                    "B183": parsed_data["sec9"].get("B183",""),
+                                    "B189": parsed_data["sec9"].get("B189","")
                                 }
                                 
                                 for addr, val in cell_map_e.items():
                                     if not val: continue
-                                    if addr in ["B183"] and "±" not in val:
+                                    if addr in ["B183", "B189"] and "±" not in val:
                                         num = re.search(r'([\d\.]+)', val)
                                         if num:
                                             suffix = "0.01" if addr == "B183" else "0.005"
