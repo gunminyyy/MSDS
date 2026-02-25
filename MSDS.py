@@ -61,7 +61,8 @@ def calculate_smart_height_basic(text, mode="CFF(K)"):
     total_visual_lines = 0
     
     if "E" in mode:
-        char_limit = 65.0
+        # [수정] 영문 모드(HP/CFF 공통)의 줄바꿈 기준을 58자로 통일하여 텍스트 잘림 현상 방지
+        char_limit = 58.0
         for line in lines:
             if len(line) == 0:
                 total_visual_lines += 1
@@ -188,7 +189,8 @@ def fill_fixed_range(ws, start_row, end_row, codes, code_map, mode="CFF(K)"):
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
                 safe_write_force(ws, current_row, 4, "자료없음", center=False)
-            elif "E" in mode and current_row in [24, 25, 38, 50, 64, 70]:
+            # [수정] 영문 모드에서 no data available을 넣는 기준 행을 24행으로 원상 복구 (밀림 해결)
+            elif "E" in mode and current_row in [24, 38, 50, 64, 70]:
                 ws.row_dimensions[current_row].hidden = False
                 safe_write_force(ws, current_row, 2, "")
                 safe_write_force(ws, current_row, 4, "no data available", center=False)
@@ -1110,7 +1112,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
             "ENV": env_raw
         }
 
-    # [수정] 15번 항목: 15섹션의 전체 텍스트 긁어오기 (CFF/HP 각 모드별 조건 처리를 위함)
     sec15_lines = []
     start_15 = -1; end_15 = -1
     for i, line in enumerate(all_lines):
@@ -1369,9 +1370,9 @@ with col_btn:
                                     dest_ws.row_dimensions[19].height = len(parsed_data["hazard_cls"]) * 14.0
                                 
                                 if parsed_data["signal_word"]:
-                                    safe_write_force(dest_ws, 24, 2, parsed_data["signal_word"], center=False)
+                                    safe_write_force(dest_ws, 23, 2, parsed_data["signal_word"], center=False)
 
-                                fill_fixed_range(dest_ws, 25, 36, parsed_data["h_codes"], code_map, mode=option)
+                                fill_fixed_range(dest_ws, 24, 36, parsed_data["h_codes"], code_map, mode=option)
                                 fill_fixed_range(dest_ws, 38, 49, parsed_data["p_prev"], code_map, mode=option)
                                 fill_fixed_range(dest_ws, 50, 63, parsed_data["p_resp"], code_map, mode=option)
                                 fill_fixed_range(dest_ws, 64, 69, parsed_data["p_stor"], code_map, mode=option)
@@ -1468,10 +1469,6 @@ with col_btn:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         
-                                        if is_blue_dominant(pil_img): continue
-                                        w, h = pil_img.size
-                                        if not is_square_shaped(w, h): continue
-
                                         if loaded_refs:
                                             matched_name = find_best_match_name(pil_img, loaded_refs, mode="HP(K)")
                                             if matched_name:
