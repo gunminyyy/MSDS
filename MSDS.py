@@ -1294,6 +1294,8 @@ with col_btn:
                             res = []
                             cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
                             for r in range(s_r, e_r + 1):
+                                if ws.row_dimensions[r].hidden: 
+                                    continue
                                 cas = ws.cell(row=r, column=cas_col).value
                                 conc = ws.cell(row=r, column=conc_col).value
                                 if cas and str(cas).strip():
@@ -1326,6 +1328,12 @@ with col_btn:
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
                             parsed_data = parse_pdf_final(doc, mode=option)
                             
+                            # [수정] 제품명 할당 로직: UI 입력값이 있으면 사용하고, 없으면 PDF 파일명 사용
+                            if product_name_input.strip():
+                                current_prod_name = product_name_input.strip()
+                            else:
+                                current_prod_name = uploaded_file.name.rsplit('.', 1)[0]
+                            
                             if option in ["CFF(E)", "HP(E)"] and kor_override_data:
                                 parsed_data["h_codes"] = kor_override_data["h_codes"]
                                 parsed_data["p_prev"] = kor_override_data["p_prev"]
@@ -1349,8 +1357,8 @@ with col_btn:
                                 dest_ws['A64'].alignment = ALIGN_LEFT
                                 dest_ws['A70'].alignment = ALIGN_LEFT
                                 
-                                safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
-                                safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
+                                safe_write_force(dest_ws, 6, 2, current_prod_name, center=True)
+                                safe_write_force(dest_ws, 9, 2, current_prod_name, center=False)
                                 
                                 if parsed_data["hazard_cls"]:
                                     clean_cls = "\n".join(parsed_data["hazard_cls"])
@@ -1456,8 +1464,8 @@ with col_btn:
                                 dest_ws['A64'].alignment = ALIGN_LEFT
                                 dest_ws['A70'].alignment = ALIGN_LEFT
                                 
-                                safe_write_force(dest_ws, 6, 2, product_name_input, center=True)
-                                safe_write_force(dest_ws, 9, 2, product_name_input, center=False)
+                                safe_write_force(dest_ws, 6, 2, current_prod_name, center=True)
+                                safe_write_force(dest_ws, 9, 2, current_prod_name, center=False)
                                 
                                 if parsed_data["hazard_cls"]:
                                     clean_cls = "\n".join(parsed_data["hazard_cls"])
@@ -1493,12 +1501,13 @@ with col_btn:
                                     "B150": sd.get("B150",""),
                                     "B170": parsed_data["sec9"].get("B170","").capitalize(),
                                     "B176": parsed_data["sec9"].get("B176",""),
-                                    "B183": parsed_data["sec9"].get("B183","")
+                                    "B183": parsed_data["sec9"].get("B183",""),
+                                    "B189": parsed_data["sec9"].get("B189","")
                                 }
                                 
                                 for addr, val in cell_map_e.items():
                                     if not val: continue
-                                    if addr in ["B183"] and "±" not in val:
+                                    if addr in ["B183", "B189"] and "±" not in val:
                                         num = re.search(r'([\d\.]+)', val)
                                         if num:
                                             suffix = "0.01" if addr == "B183" else "0.005"
@@ -1563,8 +1572,8 @@ with col_btn:
                                 safe_write_force(dest_ws, 544, 1, f"16.2 Date of Issue : {today_eng}", center=False)
 
                             else: # CFF(K) / HP(K)
-                                safe_write_force(dest_ws, 7, 2, product_name_input, center=True)
-                                safe_write_force(dest_ws, 10, 2, product_name_input, center=False)
+                                safe_write_force(dest_ws, 7, 2, current_prod_name, center=True)
+                                safe_write_force(dest_ws, 10, 2, current_prod_name, center=False)
                                 
                                 if parsed_data["hazard_cls"]:
                                     clean_hazard_text = "\n".join([line for line in parsed_data["hazard_cls"] if line.strip()])
@@ -1762,9 +1771,9 @@ with col_btn:
                             dest_wb.save(output)
                             output.seek(0)
                             
-                            final_name = f"{product_name_input} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
+                            final_name = f"{current_prod_name} GHS MSDS({'E' if 'E' in option else 'K'}).xlsx"
                             if final_name in new_download_data:
-                                final_name = f"{product_name_input}_{uploaded_file.name.split('.')[0]}.xlsx"
+                                final_name = f"{current_prod_name}_{uploaded_file.name.split('.')[0]}.xlsx"
                             new_download_data[final_name] = output.getvalue()
                             new_files.append(final_name)
                             
