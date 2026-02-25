@@ -621,7 +621,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["p_stor"] = extract_codes_ordered(extract_section_smart(all_lines, "3) Storage", "4) Disposal", mode))
         result["p_disp"] = extract_codes_ordered(extract_section_smart(all_lines, "4) Disposal", "C. Other hazards", mode))
 
-        # [수정] HP(E) 모드의 성분 추출 로직을 CFF(E)와 동일한 스마트 블록 추출 방식으로 완벽 동기화 (물질 누락 오류 해결)
         comp_text = extract_section_smart(all_lines, "3. Composition", ["4. FIRST-AID", "4. First aid"], mode)
         regex_cas = re.compile(r'\b\d{2,7}-\d{2}-\d\b')
         regex_conc = re.compile(r'\b(\d+(?:\.\d+)?)\s*(?:~|-)\s*(\d+(?:\.\d+)?)\b')
@@ -679,6 +678,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         s8_raw = extract_section_smart(all_lines, "ACGIH", "OSHA", mode)
         s8_raw = re.sub(r'(?i)^.*TLV\s*', '', s8_raw).strip()
         s8_clean = re.sub(r'[○•\-\*]+', '', s8_raw).strip()
+        
+        # [수정] 대괄호 기호만 제거 (내용은 유지)
+        s8_clean = s8_clean.replace("[", "").replace("]", "")
         
         s8 = {}
         if "Not applicable" in s8_clean or "Not available" in s8_clean or not s8_clean:
@@ -826,8 +828,12 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         result["sec4_to_7"] = data
 
         s8 = {}
-        s8["B154"] = extract_section_smart(all_lines, "Internal regulations", "ACGIH regulations", mode)
-        s8["B156"] = extract_section_smart(all_lines, "ACGIH regulations", "Biological exposure", mode)
+        s8_154_raw = extract_section_smart(all_lines, "Internal regulations", "ACGIH regulations", mode)
+        s8_156_raw = extract_section_smart(all_lines, "ACGIH regulations", "Biological exposure", mode)
+        
+        # [수정] 대괄호 기호만 제거 (내용은 유지)
+        s8["B154"] = s8_154_raw.replace("[", "").replace("]", "")
+        s8["B156"] = s8_156_raw.replace("[", "").replace("]", "")
         result["sec8"] = s8
 
         s9 = {}
@@ -1290,6 +1296,8 @@ with col_btn:
                             res = []
                             cas_regex = re.compile(r'(\d{2,7}\s*-\s*\d{2}\s*-\s*\d)')
                             for r in range(s_r, e_r + 1):
+                                if ws.row_dimensions[r].hidden: 
+                                    continue
                                 cas = ws.cell(row=r, column=cas_col).value
                                 conc = ws.cell(row=r, column=conc_col).value
                                 if cas and str(cas).strip():
@@ -1686,7 +1694,6 @@ with col_btn:
                                 safe_write_force(dest_ws, 515, 2, pg_val, center=False)
                                 safe_write_force(dest_ws, 516, 2, env_val, center=False)
 
-                                # [수정] 15번 항목: CFF(K)는 추출 내용 그대로(빨간색 안 칠함), HP(K)는 키워드 유무에 따라 필터 적용
                                 s15 = parsed_data["sec15"]
                                 
                                 if option == "HP(K)":
@@ -1707,7 +1714,7 @@ with col_btn:
                                 today_str = datetime.now().strftime("%Y.%m.%d")
                                 safe_write_force(dest_ws, 542, 2, today_str, center=False)
 
-                            # [이미지 복원 로직: HP(E)에도 HP(K)와 동일한 정사각형 및 파란색 필터 적용]
+                            # [이미지 복원 로직: HP(E)에도 쓰레기 이미지 필터링 완벽 적용 및 동기화]
                             if option in ["CFF(K)", "HP(K)", "CFF(E)", "HP(E)"]:
                                 collected_pil_images = []
                                 page = doc[0]
@@ -1719,7 +1726,7 @@ with col_btn:
                                         base_image = doc.extract_image(xref)
                                         pil_img = PILImage.open(io.BytesIO(base_image["image"]))
                                         
-                                        # [수정] HP(K)뿐만 아니라 HP(E) 모드에서도 쓰레기 그림 필터 적용
+                                        # HP 모드일 때만 배너 등 파란색/비정사각형 쓰레기 이미지를 필터링
                                         if option in ["HP(K)", "HP(E)"]:
                                             if is_blue_dominant(pil_img): continue
                                             w, h = pil_img.size
