@@ -8,12 +8,22 @@ from PIL import Image as PILImage, ImageChops
 import io
 import re
 import os
+import sys
 import fitz  # PyMuPDF
 import numpy as np
 import gc
 import math
 from datetime import datetime
 import openpyxl.utils
+
+# --- [추가] 단일 파일(.exe) 실행 시 임시 폴더 절대 경로 추적 함수 ---
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+# -------------------------------------------------------------------
 
 # 1. 페이지 설정
 st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
@@ -280,7 +290,8 @@ def normalize_image_smart(pil_img):
     except: return pil_img.resize((64, 64)).convert('L')
 
 def get_reference_images():
-    img_folder = "reference_imgs"
+    # [수정] 패키징 시 절대 경로 사용을 위해 resource_path 적용
+    img_folder = resource_path("reference_imgs")
     if not os.path.exists(img_folder): return {}, False
     try:
         ref_images = {}
@@ -712,6 +723,9 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         g_m = re.search(r'([\d\.]+)', sg_val)
         s9["B183"] = f"{g_m.group(1)} ± 0.010" if g_m else ""
         
+        b189_raw = find_val_in_sec9(sec9_lines, "Refractive index")
+        s9["B189"] = b189_raw.replace("(20℃)", "").strip()
+        
         result["sec9"] = s9
 
         s14 = {}
@@ -1005,7 +1019,12 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B127"] = extract_section_smart(all_lines, "다. 흡입", "라. 먹었을", mode)
         data["B128"] = extract_section_smart(all_lines, "라. 먹었을", "마. 기타", mode)
         data["B129"] = extract_section_smart(all_lines, "마. 기타", ["5.", "폭발"], mode)
-        data["B132"] = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
+        
+        # [수정] B132 직사주수 줄바꿈 예외 처리 추가
+        b132_raw = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
+        if "직사주수를 사용한" in b132_raw and "- 직사주수를" not in b132_raw:
+            b132_raw = b132_raw.replace("직사주수를 사용한", "\n- 직사주수를 사용한")
+        data["B132"] = b132_raw
         
         b133_raw = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
         data["B133"] = re.sub(r'^(특정\s*유해성)\s*', '', b133_raw).strip()
@@ -1147,7 +1166,7 @@ c1, c2, c3 = st.columns(3)
 with c1:
     product_name_input = st.text_input("제품명 입력")
 with c2:
-    option = st.selectbox("적용할 양식", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
+    option = st.selectbox("원본 종류", ("CFF(K)", "CFF(E)", "HP(K)", "HP(E)"))
 with c3:
     refractive_index_input = ""
     if option in ["HP(K)", "HP(E)"]:
@@ -1179,9 +1198,9 @@ with col_btn:
     if st.button("변환 시작", use_container_width=True):
         if uploaded_files and master_data_file:
             if option in ["CFF(E)", "HP(E)"]:
-                template_path = os.path.join("templates", "MSDS 영문.xlsx")
+                template_path = resource_path(os.path.join("templates", "MSDS 영문.xlsx"))
             else:
-                template_path = os.path.join("templates", "MSDS 국문.xlsx")
+                template_path = resource_path(os.path.join("templates", "MSDS 국문.xlsx"))
                 
             if not os.path.exists(template_path):
                 st.error(f"오류: '{template_path}' 파일을 찾을 수 없습니다. 'templates' 폴더 안에 파일을 넣어주세요.")
@@ -1328,7 +1347,6 @@ with col_btn:
                             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
                             parsed_data = parse_pdf_final(doc, mode=option)
                             
-                            # [수정] 제품명 할당 로직: UI 입력값이 있으면 사용하고, 없으면 PDF 파일명 사용
                             if product_name_input.strip():
                                 current_prod_name = product_name_input.strip()
                             else:
