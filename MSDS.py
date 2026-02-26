@@ -134,6 +134,13 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         
         formatted_text = formatted_text.replace("Follow\nStop", "Follow Stop")
         
+        # --- [수정] 영문 모드(CFF E, HP E) 문장 끊김 방지 예외 처리 추가 ---
+        formatted_text = re.sub(r'\band\s*\n\s*([A-Z])', r'and \1', formatted_text)
+        formatted_text = re.sub(r'unattended\.\s*\n\s*If', 'unattended. If', formatted_text)
+        formatted_text = re.sub(r'minutes\.\s*\n\s*Remove', 'minutes. Remove', formatted_text)
+        formatted_text = re.sub(r'do\.\s*\n\s*Continue', 'do. Continue', formatted_text)
+        # -------------------------------------------------------------
+        
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
         final_text = "\n".join(lines)
         
@@ -290,7 +297,6 @@ def normalize_image_smart(pil_img):
     except: return pil_img.resize((64, 64)).convert('L')
 
 def get_reference_images():
-    # [수정] 패키징 시 절대 경로 사용을 위해 resource_path 적용
     img_folder = resource_path("reference_imgs")
     if not os.path.exists(img_folder): return {}, False
     try:
@@ -1020,7 +1026,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = extract_section_smart(all_lines, "라. 먹었을", "마. 기타", mode)
         data["B129"] = extract_section_smart(all_lines, "마. 기타", ["5.", "폭발"], mode)
         
-        # [수정] B132 직사주수 줄바꿈 예외 처리 추가 (하이픈 제거)
+        # [수정] B132 직사주수 줄바꿈 예외 처리 추가 (하이픈 없이 줄바꿈만)
         b132_raw = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
         if "직사주수를 사용한" in b132_raw and "\n직사주수를" not in b132_raw:
             b132_raw = b132_raw.replace("직사주수를 사용한", "\n직사주수를 사용한")
