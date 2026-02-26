@@ -26,7 +26,8 @@ def resource_path(relative_path):
 # -------------------------------------------------------------------
 
 # 1. 페이지 설정
-st.set_page_config(page_title="MSDS 스마트 변환기", layout="wide")
+# [수정] 페이지 타이틀 변경
+st.set_page_config(page_title="MSDS 양식 변환기", layout="wide")
 st.title("MSDS 양식 변환기")
 st.markdown("---")
 
@@ -134,12 +135,10 @@ def format_and_calc_height_sec47(text, mode="CFF(K)"):
         
         formatted_text = formatted_text.replace("Follow\nStop", "Follow Stop")
         
-        # --- [수정] 영문 모드(CFF E, HP E) 문장 끊김 방지 예외 처리 추가 ---
         formatted_text = re.sub(r'\band\s*\n\s*([A-Z])', r'and \1', formatted_text)
         formatted_text = re.sub(r'unattended\.\s*\n\s*If', 'unattended. If', formatted_text)
         formatted_text = re.sub(r'minutes\.\s*\n\s*Remove', 'minutes. Remove', formatted_text)
         formatted_text = re.sub(r'do\.\s*\n\s*Continue', 'do. Continue', formatted_text)
-        # -------------------------------------------------------------
         
         lines = [line.strip() for line in formatted_text.split('\n') if line.strip()]
         final_text = "\n".join(lines)
@@ -297,7 +296,6 @@ def normalize_image_smart(pil_img):
     except: return pil_img.resize((64, 64)).convert('L')
 
 def get_reference_images():
-    # [수정] 패키징 시 절대 경로 사용을 위해 resource_path 적용
     img_folder = resource_path("reference_imgs")
     if not os.path.exists(img_folder): return {}, False
     try:
@@ -1027,7 +1025,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = extract_section_smart(all_lines, "라. 먹었을", "마. 기타", mode)
         data["B129"] = extract_section_smart(all_lines, "마. 기타", ["5.", "폭발"], mode)
         
-        # [수정] B132 직사주수 줄바꿈 예외 처리 추가 (하이픈 없이 줄바꿈만)
         b132_raw = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
         if "직사주수를 사용한" in b132_raw and "\n직사주수를" not in b132_raw:
             b132_raw = b132_raw.replace("직사주수를 사용한", "\n직사주수를 사용한")
@@ -1159,15 +1156,11 @@ st.markdown("### 📂 필수 파일 업로드")
 col1, col2 = st.columns(2)
 with col1:
     master_data_path = resource_path(os.path.join("data", "master_data.xlsx"))
-    if os.path.exists(master_data_path):
-        st.success("✅ 중앙 데이터(MSDS 데이터) 내장 완료")
-    else:
+    if not os.path.exists(master_data_path):
         st.error("⚠️ 내장된 중앙 데이터(data/master_data.xlsx)를 찾을 수 없습니다.")
 
     loaded_refs, folder_exists = get_reference_images()
-    if folder_exists and loaded_refs:
-        st.success(f"✅ 신호어 {len(loaded_refs)}개 로드됨")
-    elif not folder_exists:
+    if not folder_exists:
         st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
 with col2:
@@ -1835,3 +1828,5 @@ with col_dl:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
+
+//중앙 데이터를 폴더에서 불러올때, 엑셀 창이 숨김 상태로 돼있으면 아예 데이터를 못 읽어오는데 해결 가능해?
