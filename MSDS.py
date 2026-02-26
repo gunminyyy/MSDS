@@ -26,7 +26,6 @@ def resource_path(relative_path):
 # -------------------------------------------------------------------
 
 # 1. 페이지 설정
-# [수정] 페이지 타이틀 변경
 st.set_page_config(page_title="MSDS 양식 변환기", layout="wide")
 st.title("MSDS 양식 변환기")
 st.markdown("---")
@@ -1152,19 +1151,16 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 # --------------------------------------------------------------------------
 # [4. 메인 실행 구역]
 # --------------------------------------------------------------------------
-st.markdown("### 📂 필수 파일 업로드")
-col1, col2 = st.columns(2)
-with col1:
-    master_data_path = resource_path(os.path.join("data", "master_data.xlsx"))
-    if not os.path.exists(master_data_path):
-        st.error("⚠️ 내장된 중앙 데이터(data/master_data.xlsx)를 찾을 수 없습니다.")
+master_data_path = resource_path(os.path.join("data", "master_data.xlsx"))
+if not os.path.exists(master_data_path):
+    st.error("⚠️ 내장된 중앙 데이터(data/master_data.xlsx)를 찾을 수 없습니다.")
 
-    loaded_refs, folder_exists = get_reference_images()
-    if not folder_exists:
-        st.warning("⚠️ 'reference_imgs' 폴더 필요")
+loaded_refs, folder_exists = get_reference_images()
+if not folder_exists:
+    st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
-with col2:
-    uploaded_files = st.file_uploader("원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
+# [수정] 원본 데이터 업로드 박스를 단독으로 배치하여 왼쪽으로 정렬
+uploaded_files = st.file_uploader("원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
 
 st.write("")
 c1, c2, c3 = st.columns(3)
@@ -1828,4 +1824,3 @@ with col_dl:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=i
                 )
-
