@@ -23,28 +23,6 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
-
-# ⭐ [추가] 엑셀 파일이 어디에 압축 풀리든 무조건 찾아내는 강제 스캔 함수
-def get_master_data_path():
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    
-    # 1. 정상적으로 data 폴더 안에 있을 경우
-    p1 = os.path.join(base_path, "data", "master_data.xlsx")
-    if os.path.exists(p1): return p1
-    
-    # 2. 폴더 없이 루트에 그냥 구워졌을 경우
-    p2 = os.path.join(base_path, "master_data.xlsx")
-    if os.path.exists(p2): return p2
-    
-    # 3. 그래도 못 찾으면 하위 폴더 전체를 영혼까지 스캔
-    for root, dirs, files in os.walk(base_path):
-        for f in files:
-            if "master_data" in f and f.endswith(".xlsx") and not f.startswith("~"):
-                return os.path.join(root, f)
-    return None
 # -------------------------------------------------------------------
 
 # 1. 페이지 설정
@@ -1173,15 +1151,18 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 # --------------------------------------------------------------------------
 # [4. 메인 실행 구역]
 # --------------------------------------------------------------------------
-master_data_path = get_master_data_path()
-if not master_data_path:
-    st.error("⚠️ 내장된 중앙 데이터(master_data.xlsx)를 찾을 수 없습니다. 빌드 옵션을 확인해주세요.")
+st.markdown("### 📂 필수 파일 업로드")
 
-loaded_refs, folder_exists = get_reference_images()
-if not folder_exists:
-    st.warning("⚠️ 'reference_imgs' 폴더 필요")
+# [수정] 다시 두 개의 컬럼으로 나누어 수동 업로드 방식으로 복구
+col1, col2 = st.columns(2)
+with col1:
+    master_data_file = st.file_uploader("MSDS 데이터 (ingredients...xlsx)", type="xlsx")
+    loaded_refs, folder_exists = get_reference_images()
+    if not folder_exists:
+        st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
-uploaded_files = st.file_uploader("원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
+with col2:
+    uploaded_files = st.file_uploader("원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
 
 st.write("")
 c1, c2, c3 = st.columns(3)
@@ -1218,7 +1199,8 @@ with col_btn:
     st.subheader("▶ 변환 실행")
     st.write("") 
     if st.button("변환 시작", use_container_width=True):
-        if uploaded_files and master_data_path:
+        # [수정] master_data_path 대신 master_data_file 객체가 있는지 확인
+        if uploaded_files and master_data_file:
             if option in ["CFF(E)", "HP(E)"]:
                 template_path = resource_path(os.path.join("templates", "MSDS 영문.xlsx"))
             else:
@@ -1227,7 +1209,6 @@ with col_btn:
             if not os.path.exists(template_path):
                 st.error(f"오류: '{template_path}' 파일을 찾을 수 없습니다. 'templates' 폴더 안에 파일을 넣어주세요.")
             else:
-                # ⭐ [수정] 변환 시작을 알리는 뚜렷한 UI 메시지 추가
                 st.info("🔄 데이터 변환을 진행하고 있습니다. 잠시만 기다려주세요...")
                 with st.spinner(f"{option} 모드로 변환 중..."):
                     
@@ -1240,14 +1221,17 @@ with col_btn:
                     eng_data_map = {} 
                     
                     try:
-                        xls = pd.ExcelFile(master_data_path)
+                        # [수정] 메모리에 올라간 업로드 파일에서 엑셀 읽기
+                        master_data_file.seek(0)
+                        file_bytes = master_data_file.read()
+                        xls = pd.ExcelFile(io.BytesIO(file_bytes))
                         sheet_names = xls.sheet_names
                         
                         target_sheet = sheet_names[0]
                         for sheet in sheet_names:
                             if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
                             
-                        df_code = pd.read_excel(master_data_path, sheet_name=target_sheet)
+                        df_code = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet)
                         if "K" in option:
                             target_col_idx = 1
                         else:
@@ -1264,7 +1248,7 @@ with col_btn:
                             for sheet in sheet_names:
                                 if "국문" in sheet: sheet_kor = sheet; break
                             
-                            df_kor = pd.read_excel(master_data_path, sheet_name=sheet_kor)
+                            df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
                             for _, row in df_kor.iterrows():
                                 if pd.notna(row.iloc[0]):
                                     c = str(row.iloc[0]).replace(" ", "").strip()
@@ -1285,7 +1269,7 @@ with col_btn:
                             for sheet in sheet_names:
                                 if "영문" in sheet: sheet_eng = sheet; break
                             
-                            df_eng = pd.read_excel(master_data_path, sheet_name=sheet_eng)
+                            df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
                             for _, row in df_eng.iterrows():
                                 if pd.notna(row.iloc[0]):
                                     c = str(row.iloc[0]).replace(" ", "").strip()
