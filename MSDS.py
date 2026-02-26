@@ -23,6 +23,28 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+# ⭐ [추가] 엑셀 파일이 어디에 압축 풀리든 무조건 찾아내는 강제 스캔 함수
+def get_master_data_path():
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    
+    # 1. 정상적으로 data 폴더 안에 있을 경우
+    p1 = os.path.join(base_path, "data", "master_data.xlsx")
+    if os.path.exists(p1): return p1
+    
+    # 2. 폴더 없이 루트에 그냥 구워졌을 경우
+    p2 = os.path.join(base_path, "master_data.xlsx")
+    if os.path.exists(p2): return p2
+    
+    # 3. 그래도 못 찾으면 하위 폴더 전체를 영혼까지 스캔
+    for root, dirs, files in os.walk(base_path):
+        for f in files:
+            if "master_data" in f and f.endswith(".xlsx") and not f.startswith("~"):
+                return os.path.join(root, f)
+    return None
 # -------------------------------------------------------------------
 
 # 1. 페이지 설정
@@ -824,7 +846,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = extract_section_smart(all_lines, "4.4 If inhaled", "4.5 If swallowed", mode)
         data["B129"] = extract_section_smart(all_lines, "4.5 If swallowed", "4.6 Special note for doctors", mode)
         if data["B129"]:
-            data["B129"] = data["B129"].replace("Medical personnel, and to ensure that take protection measures is recognized for its substance", "")
+            data["B129"] = re.sub(r'Medical personnel, and to ensure that take protection measures is recognized for its substance\.?', '', data["B129"], flags=re.IGNORECASE).strip()
 
         data["B132"] = extract_section_smart(all_lines, "5.1 Extinguishing media", "5.2 Special hazards", mode)
         data["B134"] = extract_section_smart(all_lines, "5.2 Special hazards", "5.3 Advice for firefighters", mode)
@@ -1151,15 +1173,14 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 # --------------------------------------------------------------------------
 # [4. 메인 실행 구역]
 # --------------------------------------------------------------------------
-master_data_path = resource_path(os.path.join("data", "master_data.xlsx"))
-if not os.path.exists(master_data_path):
-    st.error("⚠️ 내장된 중앙 데이터(data/master_data.xlsx)를 찾을 수 없습니다.")
+master_data_path = get_master_data_path()
+if not master_data_path:
+    st.error("⚠️ 내장된 중앙 데이터(master_data.xlsx)를 찾을 수 없습니다. 빌드 옵션을 확인해주세요.")
 
 loaded_refs, folder_exists = get_reference_images()
 if not folder_exists:
     st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
-# [수정] 원본 데이터 업로드 박스를 단독으로 배치하여 왼쪽으로 정렬
 uploaded_files = st.file_uploader("원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
 
 st.write("")
@@ -1197,7 +1218,7 @@ with col_btn:
     st.subheader("▶ 변환 실행")
     st.write("") 
     if st.button("변환 시작", use_container_width=True):
-        if uploaded_files and os.path.exists(master_data_path):
+        if uploaded_files and master_data_path:
             if option in ["CFF(E)", "HP(E)"]:
                 template_path = resource_path(os.path.join("templates", "MSDS 영문.xlsx"))
             else:
@@ -1206,6 +1227,8 @@ with col_btn:
             if not os.path.exists(template_path):
                 st.error(f"오류: '{template_path}' 파일을 찾을 수 없습니다. 'templates' 폴더 안에 파일을 넣어주세요.")
             else:
+                # ⭐ [수정] 변환 시작을 알리는 뚜렷한 UI 메시지 추가
+                st.info("🔄 데이터 변환을 진행하고 있습니다. 잠시만 기다려주세요...")
                 with st.spinner(f"{option} 모드로 변환 중..."):
                     
                     new_files = []
