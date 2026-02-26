@@ -1020,10 +1020,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = extract_section_smart(all_lines, "라. 먹었을", "마. 기타", mode)
         data["B129"] = extract_section_smart(all_lines, "마. 기타", ["5.", "폭발"], mode)
         
-        # [수정] B132 직사주수 줄바꿈 예외 처리 추가
+        # [수정] B132 직사주수 줄바꿈 예외 처리 추가 (하이픈 제거)
         b132_raw = extract_section_smart(all_lines, "가. 적절한", "나. 화학물질", mode)
-        if "직사주수를 사용한" in b132_raw and "- 직사주수를" not in b132_raw:
-            b132_raw = b132_raw.replace("직사주수를 사용한", "\n- 직사주수를 사용한")
+        if "직사주수를 사용한" in b132_raw and "\n직사주수를" not in b132_raw:
+            b132_raw = b132_raw.replace("직사주수를 사용한", "\n직사주수를 사용한")
         data["B132"] = b132_raw
         
         b133_raw = extract_section_smart(all_lines, "나. 화학물질", "다. 화재진압", mode)
