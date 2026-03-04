@@ -644,11 +644,17 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         conc_list = []
         
         comp_text_no_cas = regex_cas.sub(" ", comp_text)
+        
+        # [수정] 식별번호(ex: 2005-3-3059, KE-27445) 필터링
+        comp_text_no_cas = re.sub(r'\b(?:(?:19|20)\d{2}-\d{1,2}-\d+|KE-\d+)\b', ' ', comp_text_no_cas, flags=re.IGNORECASE)
+        
         for match in regex_conc.finditer(comp_text_no_cas):
-            val1 = float(match.group(1))
-            val2 = float(match.group(2))
-            if val1 <= 100 and val2 <= 100:
-                conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+            try:
+                val1 = float(match.group(1))
+                val2 = float(match.group(2))
+                if val1 <= 100 and val2 <= 100:
+                    conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+            except: pass
                 
         max_len = max(len(cas_list), len(conc_list))
         for i in range(max_len):
@@ -805,11 +811,17 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         conc_list = []
         
         comp_text_no_cas = regex_cas.sub(" ", comp_text)
+        
+        # [수정] 식별번호(ex: 2005-3-3059, KE-27445) 필터링
+        comp_text_no_cas = re.sub(r'\b(?:(?:19|20)\d{2}-\d{1,2}-\d+|KE-\d+)\b', ' ', comp_text_no_cas, flags=re.IGNORECASE)
+        
         for match in regex_conc.finditer(comp_text_no_cas):
-            val1 = float(match.group(1))
-            val2 = float(match.group(2))
-            if val1 <= 100 and val2 <= 100:
-                conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+            try:
+                val1 = float(match.group(1))
+                val2 = float(match.group(2))
+                if val1 <= 100 and val2 <= 100:
+                    conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+            except: pass
                 
         max_len = max(len(cas_list), len(conc_list))
         for i in range(max_len):
@@ -824,7 +836,7 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         data["B128"] = extract_section_smart(all_lines, "4.4 If inhaled", "4.5 If swallowed", mode)
         data["B129"] = extract_section_smart(all_lines, "4.5 If swallowed", "4.6 Special note for doctors", mode)
         if data["B129"]:
-            data["B129"] = data["B129"].replace("Medical personnel, and to ensure that take protection measures is recognized for its substance", "")
+            data["B129"] = re.sub(r'Medical personnel, and to ensure that take protection measures is recognized for its substance\.?', '', data["B129"], flags=re.IGNORECASE).strip()
 
         data["B132"] = extract_section_smart(all_lines, "5.1 Extinguishing media", "5.2 Special hazards", mode)
         data["B134"] = extract_section_smart(all_lines, "5.2 Special hazards", "5.3 Advice for firefighters", mode)
@@ -985,12 +997,21 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 if cas_found:
                     c_val = cas_found[0].replace(" ", "")
                     txt_no_cas = txt.replace(cas_found[0], " " * len(cas_found[0]))
+                    
+                    # [수정] 식별번호(예: 2005-3-3059, KE-27445) 제거
+                    txt_no_cas = re.sub(r'\b(?:(?:19|20)\d{2}-\d{1,2}-\d+|KE-\d+)\b', ' ', txt_no_cas, flags=re.IGNORECASE)
+                    
                     m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
                     if m_range:
                         s, e = m_range.group(1), m_range.group(2)
-                        if s == "1": s = "0"
-                        cn_val = f"{s} ~ {e}"
-                    else:
+                        # 안전장치 추가
+                        try:
+                            if float(s) <= 100 and float(e) <= 100:
+                                if s == "1": s = "0"
+                                cn_val = f"{s} ~ {e}"
+                        except: pass
+                    
+                    if not cn_val:
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
                             try:
@@ -1007,11 +1028,19 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         if re.match(r'\d{2,7}-\d{2}-\d', potential_cas): c_val = potential_cas
                 
                 txt_clean = regex_cas_ec_kill.sub(" ", txt)
+                
+                # [수정] 식별번호(예: 2005-3-3059, KE-27445) 필터링
+                txt_clean = re.sub(r'\b(?:(?:19|20)\d{2}-\d{1,2}-\d+|KE-\d+)\b', ' ', txt_clean, flags=re.IGNORECASE)
+                
                 m_tilde = regex_tilde_range.search(txt_clean)
                 if m_tilde:
                     s, e = m_tilde.group(1), m_tilde.group(2)
-                    if s == "1": s = "0"
-                    cn_val = f"{s} ~ {e}"
+                    # 안전장치 추가
+                    try:
+                        if float(s) <= 100 and float(e) <= 100:
+                            if s == "1": s = "0"
+                            cn_val = f"{s} ~ {e}"
+                    except: pass
             
             if c_val or cn_val:
                 result["composition_data"].append((c_val, cn_val))
@@ -1151,16 +1180,17 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 # --------------------------------------------------------------------------
 # [4. 메인 실행 구역]
 # --------------------------------------------------------------------------
-master_data_path = resource_path(os.path.join("data", "master_data.xlsx"))
-if not os.path.exists(master_data_path):
-    st.error("⚠️ 내장된 중앙 데이터(data/master_data.xlsx)를 찾을 수 없습니다.")
+st.markdown("### 📂 필수 파일 업로드")
 
-loaded_refs, folder_exists = get_reference_images()
-if not folder_exists:
-    st.warning("⚠️ 'reference_imgs' 폴더 필요")
+col1, col2 = st.columns(2)
+with col1:
+    master_data_file = st.file_uploader("MSDS 데이터 (ingredients...xlsx)", type="xlsx")
+    loaded_refs, folder_exists = get_reference_images()
+    if not folder_exists:
+        st.warning("⚠️ 'reference_imgs' 폴더 필요")
 
-# [수정] 원본 데이터 업로드 박스를 단독으로 배치하여 왼쪽으로 정렬
-uploaded_files = st.file_uploader("원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
+with col2:
+    uploaded_files = st.file_uploader("원본 데이터 (PDF)", type=["pdf"], accept_multiple_files=True)
 
 st.write("")
 c1, c2, c3 = st.columns(3)
@@ -1197,7 +1227,8 @@ with col_btn:
     st.subheader("▶ 변환 실행")
     st.write("") 
     if st.button("변환 시작", use_container_width=True):
-        if uploaded_files and os.path.exists(master_data_path):
+        # [수정] master_data_path 대신 master_data_file 객체가 있는지 확인
+        if uploaded_files and master_data_file:
             if option in ["CFF(E)", "HP(E)"]:
                 template_path = resource_path(os.path.join("templates", "MSDS 영문.xlsx"))
             else:
@@ -1206,6 +1237,7 @@ with col_btn:
             if not os.path.exists(template_path):
                 st.error(f"오류: '{template_path}' 파일을 찾을 수 없습니다. 'templates' 폴더 안에 파일을 넣어주세요.")
             else:
+                st.info("🔄 데이터 변환을 진행하고 있습니다. 잠시만 기다려주세요...")
                 with st.spinner(f"{option} 모드로 변환 중..."):
                     
                     new_files = []
@@ -1217,14 +1249,17 @@ with col_btn:
                     eng_data_map = {} 
                     
                     try:
-                        xls = pd.ExcelFile(master_data_path)
+                        # [수정] 메모리에 올라간 업로드 파일에서 엑셀 읽기
+                        master_data_file.seek(0)
+                        file_bytes = master_data_file.read()
+                        xls = pd.ExcelFile(io.BytesIO(file_bytes))
                         sheet_names = xls.sheet_names
                         
                         target_sheet = sheet_names[0]
                         for sheet in sheet_names:
                             if "위험" in sheet and "안전" in sheet: target_sheet = sheet; break
                             
-                        df_code = pd.read_excel(master_data_path, sheet_name=target_sheet)
+                        df_code = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet)
                         if "K" in option:
                             target_col_idx = 1
                         else:
@@ -1241,7 +1276,7 @@ with col_btn:
                             for sheet in sheet_names:
                                 if "국문" in sheet: sheet_kor = sheet; break
                             
-                            df_kor = pd.read_excel(master_data_path, sheet_name=sheet_kor)
+                            df_kor = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_kor)
                             for _, row in df_kor.iterrows():
                                 if pd.notna(row.iloc[0]):
                                     c = str(row.iloc[0]).replace(" ", "").strip()
@@ -1262,7 +1297,7 @@ with col_btn:
                             for sheet in sheet_names:
                                 if "영문" in sheet: sheet_eng = sheet; break
                             
-                            df_eng = pd.read_excel(master_data_path, sheet_name=sheet_eng)
+                            df_eng = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_eng)
                             for _, row in df_eng.iterrows():
                                 if pd.notna(row.iloc[0]):
                                     c = str(row.iloc[0]).replace(" ", "").strip()
