@@ -23,28 +23,6 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
-
-# ⭐ [추가] 엑셀 파일이 어디에 압축 풀리든 무조건 찾아내는 강제 스캔 함수
-def get_master_data_path():
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    
-    # 1. 정상적으로 data 폴더 안에 있을 경우
-    p1 = os.path.join(base_path, "data", "master_data.xlsx")
-    if os.path.exists(p1): return p1
-    
-    # 2. 폴더 없이 루트에 그냥 구워졌을 경우
-    p2 = os.path.join(base_path, "master_data.xlsx")
-    if os.path.exists(p2): return p2
-    
-    # 3. 그래도 못 찾으면 하위 폴더 전체를 영혼까지 스캔
-    for root, dirs, files in os.walk(base_path):
-        for f in files:
-            if "master_data" in f and f.endswith(".xlsx") and not f.startswith("~"):
-                return os.path.join(root, f)
-    return None
 # -------------------------------------------------------------------
 
 # 1. 페이지 설정
@@ -668,13 +646,15 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         comp_text_no_cas = regex_cas.sub(" ", comp_text)
         
         # [수정] 식별번호(ex: 2005-3-3059, KE-27445) 필터링
-        comp_text_no_cas = re.sub(r'\b(?:\d{4}-\d{1,2}-\d+|KE-\d+)\b', ' ', comp_text_no_cas, flags=re.IGNORECASE)
+        comp_text_no_cas = re.sub(r'\b(?:(?:19|20)\d{2}-\d{1,2}-\d+|KE-\d+)\b', ' ', comp_text_no_cas, flags=re.IGNORECASE)
         
         for match in regex_conc.finditer(comp_text_no_cas):
-            val1 = float(match.group(1))
-            val2 = float(match.group(2))
-            if val1 <= 100 and val2 <= 100:
-                conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+            try:
+                val1 = float(match.group(1))
+                val2 = float(match.group(2))
+                if val1 <= 100 and val2 <= 100:
+                    conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+            except: pass
                 
         max_len = max(len(cas_list), len(conc_list))
         for i in range(max_len):
@@ -833,13 +813,15 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         comp_text_no_cas = regex_cas.sub(" ", comp_text)
         
         # [수정] 식별번호(ex: 2005-3-3059, KE-27445) 필터링
-        comp_text_no_cas = re.sub(r'\b(?:\d{4}-\d{1,2}-\d+|KE-\d+)\b', ' ', comp_text_no_cas, flags=re.IGNORECASE)
+        comp_text_no_cas = re.sub(r'\b(?:(?:19|20)\d{2}-\d{1,2}-\d+|KE-\d+)\b', ' ', comp_text_no_cas, flags=re.IGNORECASE)
         
         for match in regex_conc.finditer(comp_text_no_cas):
-            val1 = float(match.group(1))
-            val2 = float(match.group(2))
-            if val1 <= 100 and val2 <= 100:
-                conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+            try:
+                val1 = float(match.group(1))
+                val2 = float(match.group(2))
+                if val1 <= 100 and val2 <= 100:
+                    conc_list.append(f"{match.group(1)} ~ {match.group(2)}")
+            except: pass
                 
         max_len = max(len(cas_list), len(conc_list))
         for i in range(max_len):
@@ -1017,15 +999,17 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                     txt_no_cas = txt.replace(cas_found[0], " " * len(cas_found[0]))
                     
                     # [수정] 식별번호(예: 2005-3-3059, KE-27445) 제거
-                    txt_no_cas = re.sub(r'\b(?:\d{4}-\d{1,2}-\d+|KE-\d+)\b', ' ', txt_no_cas, flags=re.IGNORECASE)
+                    txt_no_cas = re.sub(r'\b(?:(?:19|20)\d{2}-\d{1,2}-\d+|KE-\d+)\b', ' ', txt_no_cas, flags=re.IGNORECASE)
                     
                     m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
                     if m_range:
                         s, e = m_range.group(1), m_range.group(2)
                         # 안전장치 추가
-                        if float(s) <= 100 and float(e) <= 100:
-                            if s == "1": s = "0"
-                            cn_val = f"{s} ~ {e}"
+                        try:
+                            if float(s) <= 100 and float(e) <= 100:
+                                if s == "1": s = "0"
+                                cn_val = f"{s} ~ {e}"
+                        except: pass
                     
                     if not cn_val:
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
@@ -1046,15 +1030,17 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 txt_clean = regex_cas_ec_kill.sub(" ", txt)
                 
                 # [수정] 식별번호(예: 2005-3-3059, KE-27445) 필터링
-                txt_clean = re.sub(r'\b(?:\d{4}-\d{1,2}-\d+|KE-\d+)\b', ' ', txt_clean, flags=re.IGNORECASE)
+                txt_clean = re.sub(r'\b(?:(?:19|20)\d{2}-\d{1,2}-\d+|KE-\d+)\b', ' ', txt_clean, flags=re.IGNORECASE)
                 
                 m_tilde = regex_tilde_range.search(txt_clean)
                 if m_tilde:
                     s, e = m_tilde.group(1), m_tilde.group(2)
                     # 안전장치 추가
-                    if float(s) <= 100 and float(e) <= 100:
-                        if s == "1": s = "0"
-                        cn_val = f"{s} ~ {e}"
+                    try:
+                        if float(s) <= 100 and float(e) <= 100:
+                            if s == "1": s = "0"
+                            cn_val = f"{s} ~ {e}"
+                    except: pass
             
             if c_val or cn_val:
                 result["composition_data"].append((c_val, cn_val))
