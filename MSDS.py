@@ -23,6 +23,28 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+# ⭐ [추가] 엑셀 파일이 어디에 압축 풀리든 무조건 찾아내는 강제 스캔 함수
+def get_master_data_path():
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    
+    # 1. 정상적으로 data 폴더 안에 있을 경우
+    p1 = os.path.join(base_path, "data", "master_data.xlsx")
+    if os.path.exists(p1): return p1
+    
+    # 2. 폴더 없이 루트에 그냥 구워졌을 경우
+    p2 = os.path.join(base_path, "master_data.xlsx")
+    if os.path.exists(p2): return p2
+    
+    # 3. 그래도 못 찾으면 하위 폴더 전체를 영혼까지 스캔
+    for root, dirs, files in os.walk(base_path):
+        for f in files:
+            if "master_data" in f and f.endswith(".xlsx") and not f.startswith("~"):
+                return os.path.join(root, f)
+    return None
 # -------------------------------------------------------------------
 
 # 1. 페이지 설정
@@ -644,6 +666,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         conc_list = []
         
         comp_text_no_cas = regex_cas.sub(" ", comp_text)
+        
+        # [수정] 식별번호(ex: 2005-3-3059, KE-27445) 필터링
+        comp_text_no_cas = re.sub(r'\b(?:\d{4}-\d{1,2}-\d+|KE-\d+)\b', ' ', comp_text_no_cas, flags=re.IGNORECASE)
+        
         for match in regex_conc.finditer(comp_text_no_cas):
             val1 = float(match.group(1))
             val2 = float(match.group(2))
@@ -805,6 +831,10 @@ def parse_pdf_final(doc, mode="CFF(K)"):
         conc_list = []
         
         comp_text_no_cas = regex_cas.sub(" ", comp_text)
+        
+        # [수정] 식별번호(ex: 2005-3-3059, KE-27445) 필터링
+        comp_text_no_cas = re.sub(r'\b(?:\d{4}-\d{1,2}-\d+|KE-\d+)\b', ' ', comp_text_no_cas, flags=re.IGNORECASE)
+        
         for match in regex_conc.finditer(comp_text_no_cas):
             val1 = float(match.group(1))
             val2 = float(match.group(2))
@@ -985,12 +1015,19 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                 if cas_found:
                     c_val = cas_found[0].replace(" ", "")
                     txt_no_cas = txt.replace(cas_found[0], " " * len(cas_found[0]))
+                    
+                    # [수정] 식별번호(예: 2005-3-3059, KE-27445) 제거
+                    txt_no_cas = re.sub(r'\b(?:\d{4}-\d{1,2}-\d+|KE-\d+)\b', ' ', txt_no_cas, flags=re.IGNORECASE)
+                    
                     m_range = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:-|~)\s*(\d+(?:\.\d+)?)\b', txt_no_cas)
                     if m_range:
                         s, e = m_range.group(1), m_range.group(2)
-                        if s == "1": s = "0"
-                        cn_val = f"{s} ~ {e}"
-                    else:
+                        # 안전장치 추가
+                        if float(s) <= 100 and float(e) <= 100:
+                            if s == "1": s = "0"
+                            cn_val = f"{s} ~ {e}"
+                    
+                    if not cn_val:
                         m_single = re.search(r'\b(\d+(?:\.\d+)?)\b', txt_no_cas)
                         if m_single:
                             try:
@@ -1007,11 +1044,17 @@ def parse_pdf_final(doc, mode="CFF(K)"):
                         if re.match(r'\d{2,7}-\d{2}-\d', potential_cas): c_val = potential_cas
                 
                 txt_clean = regex_cas_ec_kill.sub(" ", txt)
+                
+                # [수정] 식별번호(예: 2005-3-3059, KE-27445) 필터링
+                txt_clean = re.sub(r'\b(?:\d{4}-\d{1,2}-\d+|KE-\d+)\b', ' ', txt_clean, flags=re.IGNORECASE)
+                
                 m_tilde = regex_tilde_range.search(txt_clean)
                 if m_tilde:
                     s, e = m_tilde.group(1), m_tilde.group(2)
-                    if s == "1": s = "0"
-                    cn_val = f"{s} ~ {e}"
+                    # 안전장치 추가
+                    if float(s) <= 100 and float(e) <= 100:
+                        if s == "1": s = "0"
+                        cn_val = f"{s} ~ {e}"
             
             if c_val or cn_val:
                 result["composition_data"].append((c_val, cn_val))
@@ -1153,7 +1196,6 @@ def parse_pdf_final(doc, mode="CFF(K)"):
 # --------------------------------------------------------------------------
 st.markdown("### 📂 필수 파일 업로드")
 
-# [수정] 다시 두 개의 컬럼으로 나누어 수동 업로드 방식으로 복구
 col1, col2 = st.columns(2)
 with col1:
     master_data_file = st.file_uploader("MSDS 데이터 (ingredients...xlsx)", type="xlsx")
@@ -1199,7 +1241,6 @@ with col_btn:
     st.subheader("▶ 변환 실행")
     st.write("") 
     if st.button("변환 시작", use_container_width=True):
-        # [수정] master_data_path 대신 master_data_file 객체가 있는지 확인
         if uploaded_files and master_data_file:
             if option in ["CFF(E)", "HP(E)"]:
                 template_path = resource_path(os.path.join("templates", "MSDS 영문.xlsx"))
@@ -1221,7 +1262,6 @@ with col_btn:
                     eng_data_map = {} 
                     
                     try:
-                        # [수정] 메모리에 올라간 업로드 파일에서 엑셀 읽기
                         master_data_file.seek(0)
                         file_bytes = master_data_file.read()
                         xls = pd.ExcelFile(io.BytesIO(file_bytes))
