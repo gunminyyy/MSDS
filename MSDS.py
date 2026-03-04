@@ -23,6 +23,28 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+# ⭐ [추가] 엑셀 파일이 어디에 압축 풀리든 무조건 찾아내는 강제 스캔 함수
+def get_master_data_path():
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    
+    # 1. 정상적으로 data 폴더 안에 있을 경우
+    p1 = os.path.join(base_path, "data", "master_data.xlsx")
+    if os.path.exists(p1): return p1
+    
+    # 2. 폴더 없이 루트에 그냥 구워졌을 경우
+    p2 = os.path.join(base_path, "master_data.xlsx")
+    if os.path.exists(p2): return p2
+    
+    # 3. 그래도 못 찾으면 하위 폴더 전체를 영혼까지 스캔
+    for root, dirs, files in os.walk(base_path):
+        for f in files:
+            if "master_data" in f and f.endswith(".xlsx") and not f.startswith("~"):
+                return os.path.join(root, f)
+    return None
 # -------------------------------------------------------------------
 
 # 1. 페이지 설정
@@ -1227,7 +1249,6 @@ with col_btn:
     st.subheader("▶ 변환 실행")
     st.write("") 
     if st.button("변환 시작", use_container_width=True):
-        # [수정] master_data_path 대신 master_data_file 객체가 있는지 확인
         if uploaded_files and master_data_file:
             if option in ["CFF(E)", "HP(E)"]:
                 template_path = resource_path(os.path.join("templates", "MSDS 영문.xlsx"))
@@ -1249,7 +1270,6 @@ with col_btn:
                     eng_data_map = {} 
                     
                     try:
-                        # [수정] 메모리에 올라간 업로드 파일에서 엑셀 읽기
                         master_data_file.seek(0)
                         file_bytes = master_data_file.read()
                         xls = pd.ExcelFile(io.BytesIO(file_bytes))
